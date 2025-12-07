@@ -12,7 +12,7 @@ def get_input(prompt, default=None):
         return input(f"{prompt}: ").strip()
 
 def create_config():
-    print("=== FastScan Configuration Wizard ===")
+    print("=== NetConfGen Configuration Wizard ===")
     print("Config file not found. Let's create one.")
 
     config = {}
