@@ -1,6 +1,5 @@
 import yaml
 import os
-import sys
 import json
 
 def get_input(prompt, default=None):

@@ -7,7 +7,7 @@ import re
 import sys
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
+import argparse
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,36 @@ def load_port_config(config_path='ports.json'):
         logger.error(f"Failed to load port config: {e}")
         return [], {}
 
-# Глобальная загрузка конфигурации портов
-TARGET_PORTS, PORT_TO_SERVICE = load_port_config()
+def parse_ports_argument(ports_arg):
+    """
+    Парсит аргумент --ports и возвращает список портов и словарь port_to_service.
+    
+    Args:
+        ports_arg: строка с портами ('*' для всех портов, '22,80,443' для конкретных)
+    
+    Returns:
+        (list of ports, dict {port: service_name})
+    """
+    if ports_arg == '*':
+        # Все порты от 1 до 65535
+        logger.info("Scanning ALL ports (1-65535)")
+        all_ports = list(range(1, 65536))
+        port_to_service = {port: f'Port-{port}' for port in all_ports}
+        return all_ports, port_to_service
+    else:
+        # Конкретные порты через запятую
+        try:
+            ports_list = [int(p.strip()) for p in ports_arg.split(',')]
+            port_to_service = {port: f'Port-{port}' for port in ports_list}
+            logger.info(f"Scanning specified ports: {ports_list}")
+            return ports_list, port_to_service
+        except ValueError as e:
+            logger.error(f"Invalid ports format: {ports_arg}. Use comma-separated numbers or '*'")
+            return [], {}
+
+# Глобальные переменные будут установлены в NetworkScanner
+TARGET_PORTS = []
+PORT_TO_SERVICE = {}
 
 def get_arp_table():
     """
@@ -96,8 +124,27 @@ def get_arp_table():
     return arp_map
 
 class NetworkScanner:
-    def __init__(self):
-        pass
+    def __init__(self, ports_arg=None):
+        """
+        Инициализация сканера.
+        
+        Args:
+            ports_arg: строка с портами ('*' для всех, '22,80,443' для конкретных, None для ports.json)
+        """
+        global TARGET_PORTS, PORT_TO_SERVICE
+        
+        if ports_arg is None:
+            # Загружаем из ports.json
+            TARGET_PORTS, PORT_TO_SERVICE = load_port_config()
+        else:
+            # Парсим аргумент --ports
+            TARGET_PORTS, PORT_TO_SERVICE = parse_ports_argument(ports_arg)
+        
+        if not TARGET_PORTS:
+            logger.warning("No ports to scan!")
+        
+        self.target_ports = TARGET_PORTS
+        self.port_to_service = PORT_TO_SERVICE
 
     async def _check_port(self, ip, port, sem):
         async with sem:
@@ -120,11 +167,11 @@ class NetworkScanner:
         open_ports = []
         services_set = set()
 
-        for port in TARGET_PORTS:
+        for port in self.target_ports:
             if await self._check_port(ip, port, sem):
                 open_ports.append(port)
                 # Добавляем название сервиса из конфига (без дубликатов)
-                service_name = PORT_TO_SERVICE.get(port, f'Port-{port}')
+                service_name = self.port_to_service.get(port, f'Port-{port}')
                 services_set.add(service_name)
 
         if open_ports:
@@ -224,14 +271,14 @@ class NetworkScanner:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
-    if len(sys.argv) > 1:
-        targets = sys.argv[1:]
-    else:
-        # Default test subnet
-        targets = ["192.168.0.0/24"]
-        
-    scanner = NetworkScanner()
-    hosts = scanner.scan_all(targets)
+    parser = argparse.ArgumentParser(description="Network Discovery Scanner")
+    parser.add_argument('--subnet', required=True, nargs='+', help='Подсеть(и) для сканирования (например: 192.168.0.0/24)')
+    parser.add_argument('--ports', help='Порты для сканирования: "*" для всех портов, "22,80,443" для конкретных, или не указывайте для использования ports.json')
+    
+    args = parser.parse_args()
+    
+    scanner = NetworkScanner(ports_arg=args.ports)
+    hosts = scanner.scan_all(args.subnet)
     
     print(f"\nScan Results ({len(hosts)}):")
     for h in hosts:

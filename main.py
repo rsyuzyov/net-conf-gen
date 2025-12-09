@@ -59,7 +59,8 @@ def main():
     hosts = []
     if args.step in ['discovery', 'all']:
         logger.info("=== Stage 1: Discovery & Port Scan ===")
-        scanner = NetworkScanner()
+        # NetworkScanner теперь принимает ports_arg=None для использования ports.json
+        scanner = NetworkScanner(ports_arg=None)
         
         if args.host:
             # Сканируем конкретный хост
