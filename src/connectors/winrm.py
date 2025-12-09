@@ -14,6 +14,47 @@ logging.getLogger('requests_kerberos').setLevel(logging.CRITICAL)
 logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 
 class WinRMConnector(BaseConnector):
+    # Подменяем kerberos-авторизацию на GSSAPI (wheels для 3.13)
+    _kerberos_patched = False
+
+    @classmethod
+    def _ensure_gssapi_auth(cls):
+        if cls._kerberos_patched:
+            return
+        try:
+            from requests.auth import AuthBase
+            from requests_gssapi import HTTPSPNEGOAuth
+            import winrm.transport as wt
+            # Повторно используем константу REQUIRED из vendored requests_kerberos
+            REQUIRED = getattr(wt, "REQUIRED", 1)
+
+            class GSSAPIKerberosAuth(AuthBase):
+                # Шифрование WinRM через SPNEGO не поддерживаем, поэтому False
+                winrm_encryption_available = False
+
+                def __init__(self, mutual_authentication=REQUIRED, service="HTTP", delegate=False,
+                             force_preemptive=False, principal=None, hostname_override=None,
+                             sanitize_mutual_error_response=True, send_cbt=True):
+                    # HTTPSPNEGOAuth ожидает host/service, делегирование и principal
+                    self._auth = HTTPSPNEGOAuth(
+                        principal=principal,
+                        hostname_override=hostname_override,
+                        delegate=delegate,
+                        opportunistic_auth=force_preemptive,
+                        service=service,
+                        mutual_authentication=True if mutual_authentication == REQUIRED else False,
+                    )
+
+                def __call__(self, r):
+                    return self._auth(r)
+
+            wt.HTTPKerberosAuth = GSSAPIKerberosAuth
+            wt.HAVE_KERBEROS = True
+            cls._kerberos_patched = True
+        except Exception:
+            # Оставляем поведение по умолчанию, если gssapi не установлена
+            pass
+
     def connect(self, ip, user=None, password=None, key_path=None):
         if user and password:
             return self._connect_auth(ip, user, password)
@@ -21,6 +62,7 @@ class WinRMConnector(BaseConnector):
             return self._connect_sso(ip)
 
     def _connect_auth(self, ip, user, password):
+        self._ensure_gssapi_auth()
         try:
             session = winrm.Session(f'http://{ip}:5985/wsman', auth=(user, password), transport='ntlm')
             
@@ -84,6 +126,7 @@ class WinRMConnector(BaseConnector):
         return None
 
     def _connect_sso(self, ip):
+        self._ensure_gssapi_auth()
         current_user = os.environ.get('USERNAME', getpass.getuser())
         
         # Try different transports that support SSO
