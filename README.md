@@ -33,7 +33,12 @@
 1.  Клонируйте репозиторий.
 2.  Установите зависимости:
     ```bash
-    pip install -r requirements.txt
+    chmod +x ./install.sh
+    ./install.sh
+    ```
+    или
+    ```batch
+    ./install.bat
     ```
 
 ## Использование
