@@ -64,11 +64,21 @@ def main():
 
     # 2. Discovery Stage
     hosts = []
-    if args.step in ['discovery', 'all'] and not args.host:
+    if args.step in ['discovery', 'all']:
         logger.info("=== Stage 1: Discovery ===")
         scanner = NetworkScanner()
-        hosts = scanner.scan_all(targets)
-        logger.info(f"Total active hosts found: {len(hosts)}")
+        
+        if args.host:
+            # Сканируем конкретный хост
+            logger.info(f"Сканирование хоста: {args.host}")
+            # Преобразуем одиночный IP в формат /32 для сканирования
+            target = f"{args.host}/32"
+            hosts = scanner.scan_all([target])
+            logger.info(f"Хост {'активен' if hosts else 'не отвечает'}")
+        else:
+            # Сканируем все цели из конфига
+            hosts = scanner.scan_all(targets)
+            logger.info(f"Total active hosts found: {len(hosts)}")
         
         # Save discovered hosts to storage
         for host in hosts:
@@ -145,7 +155,7 @@ def main():
     # 5. Reporting Stage
     if args.step in ['report', 'all']:
         from src.reporting import ReportGenerator
-        logger.info("=== Stage 3: Reporting ===")
+        logger.info("=== Stage 4 Reporting ===")
         reporter = ReportGenerator(storage)
         reporter.generate_all()
 

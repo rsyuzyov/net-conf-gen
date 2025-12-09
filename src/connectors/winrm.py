@@ -78,7 +78,7 @@ class WinRMConnector(BaseConnector):
                 # Получаем версию ОС
                 result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
                 if result.status_code == 0:
-                    os_info['os_version'] = result.std_out.decode().strip()
+                    os_info['kernel_version'] = result.std_out.decode().strip()
                 
                 # Получаем hostname
                 result = session.run_cmd('hostname')
@@ -158,7 +158,7 @@ class WinRMConnector(BaseConnector):
                         # Получаем версию ОС
                         result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
                         if result.status_code == 0:
-                            os_info['os_version'] = result.std_out.decode().strip()
+                            os_info['kernel_version'] = result.std_out.decode().strip()
                         
                         # Получаем hostname
                         result = session.run_cmd('hostname')

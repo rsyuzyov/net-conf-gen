@@ -22,60 +22,70 @@ class PsExecConnector(BaseConnector):
         # 2. Authenticate
         # 3. Run command (hostname, os_info)
         
+        c = None
         service_created = False
         try:
-            logger.debug(f"PsExec: Connecting to {ip} as {user}...")
-            with Client(ip, username=user, password=password) as c:
-                c.connect()
+            logger.debug(f"PsExec: Connecting to {ip} as {user} (password length: {len(password) if password else 0})...")
+            c = Client(ip, username=user, password=password)
+            c.connect()
+            
+            try:
+                # Создаем сервис один раз; удаляем в finally ниже
+                c.create_service()
+                service_created = True
 
-                try:
-                    # Создаем сервис один раз; удаляем в finally ниже
-                    c.create_service()
-                    service_created = True
+                # Get Hostname
+                stdout, stderr, rc = c.run_executable("cmd.exe", arguments="/c hostname")
+                hostname = stdout.decode('utf-8').strip()
 
-                    # Get Hostname
-                    stdout, stderr, rc = c.run_executable("cmd.exe", arguments="/c hostname")
-                    hostname = stdout.decode('utf-8').strip()
+                if not hostname:
+                    logger.debug("PsExec: Empty hostname returned")
+                    return None
 
-                    if not hostname:
-                        logger.debug("PsExec: Empty hostname returned")
-                        return None
+                logger.debug(f"PsExec: Got hostname: {hostname}")
 
-                    logger.debug(f"PsExec: Got hostname: {hostname}")
+                # Get OS Info
+                stdout_os, stderr_os, rc_os = c.run_executable(
+                    "cmd.exe",
+                    arguments="/c wmic os get Caption /value",
+                )
+                os_output = stdout_os.decode('utf-8').strip()
 
-                    # Get OS Info
-                    stdout_os, stderr_os, rc_os = c.run_executable(
-                        "cmd.exe",
-                        arguments="/c wmic os get Caption /value",
-                    )
-                    os_output = stdout_os.decode('utf-8').strip()
+                os_name = "Windows"
+                for line in os_output.split('\n'):
+                    if 'caption=' in line.lower():
+                        os_name = line.split('=', 1)[1].strip()
+                        break
 
-                    os_name = "Windows"
-                    for line in os_output.split('\n'):
-                        if 'caption=' in line.lower():
-                            os_name = line.split('=', 1)[1].strip()
-                            break
-
-                    return {
-                        'hostname': hostname,
-                        'os': os_name,
-                        'type': 'windows',
-                        'user': user,
-                        'auth_method': 'psexec'
-                    }
-                finally:
-                    if service_created:
-                        try:
-                            c.remove_service()
-                        except Exception as cleanup_err:
-                            logger.debug(f"PsExec: remove_service cleanup error for {ip}: {cleanup_err}")
-        except (SMBAuthenticationError, LogonFailure):
-            logger.debug(f"PsExec: Authentication failed for {user}@{ip}")
+                return {
+                    'hostname': hostname,
+                    'os': os_name,
+                    'type': 'windows',
+                    'user': user,
+                    'auth_method': 'psexec'
+                }
+            finally:
+                if service_created:
+                    try:
+                        c.remove_service()
+                    except Exception as cleanup_err:
+                        logger.debug(f"PsExec: remove_service cleanup error for {ip}: {cleanup_err}")
+                
+                # Закрываем соединение
+                if c:
+                    try:
+                        c.disconnect()
+                    except Exception as disconnect_err:
+                        logger.debug(f"PsExec: disconnect error for {ip}: {disconnect_err}")
+        except (SMBAuthenticationError, LogonFailure) as e:
+            logger.debug(f"PsExec: Authentication failed for {user}@{ip}: {type(e).__name__} - {e}")
             return None
         except SMBConnectionClosed as e:
             logger.debug(f"PsExec: SMB connection closed for {ip}: {e}")
             return None
         except Exception as e:
-            logger.debug(f"PsExec: Connection failed to {ip}: {e}")
+            logger.warning(f"PsExec: Connection failed to {ip} with user {user}: {type(e).__name__} - {e}")
+            import traceback
+            logger.debug(f"PsExec traceback: {traceback.format_exc()}")
             return None
 

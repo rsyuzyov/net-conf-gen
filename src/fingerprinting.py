@@ -247,7 +247,7 @@ class Fingerprinter:
         Returns:
             dict: {
                 'os': str,
-                'os_version': str,
+                'kernel_version': str,
                 'type': str,
                 'confidence': str (high/medium/low),
                 'method': str (ttl/banner/vendor/none),
@@ -256,7 +256,7 @@ class Fingerprinter:
         """
         result = {
             'os': 'Unknown',
-            'os_version': '',
+            'kernel_version': '',
             'type': 'unknown',
             'hostname': '',
             'confidence': 'low',

@@ -355,9 +355,11 @@ class ConnectionChecker:
                         user = cred.get('user')
                         passwords = cred.get('passwords', [])
                         
+                        logger.debug(f"Найдены credentials для PsExec: user={user}, passwords count={len(passwords)}")
+                        
                         for password in passwords:
                             try:
-                                logger.debug(f"Пробуем PsExec с {user} для {ip}...")
+                                logger.debug(f"Пробуем PsExec с {user} для {ip} (password length: {len(password)})...")
                                 info = self.psexec_connector.connect(ip, user, password)
                                 if info:
                                     existing_host = self.storage.get_host(ip)

@@ -29,9 +29,9 @@ class SSHConnector(BaseConnector):
                 
                 # Получаем версию ядра
                 stdin, stdout, stderr = client.exec_command('uname -r', timeout=5)
-                os_version = stdout.read().decode().strip()
-                if os_version:
-                    os_info['os_version'] = os_version
+                kernel_version = stdout.read().decode().strip()
+                if kernel_version:
+                    os_info['kernel_version'] = kernel_version
                 
                 # Получаем hostname
                 stdin, stdout, stderr = client.exec_command('hostname', timeout=5)
