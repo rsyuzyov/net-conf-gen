@@ -1,7 +1,5 @@
 paramiko
 pywinrm[credssp]
-requests-gssapi
-gssapi
 pypsexec
 pyyaml
 mac-vendor-lookup
