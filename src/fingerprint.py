@@ -14,7 +14,7 @@ except ImportError:
     HAS_MAC_LOOKUP = False
     logger.debug("mac-vendor-lookup not installed. Vendor detection will be limited.")
 
-class Fingerprint:
+class Fingerprinter:
     """
     Класс для fingerprinting хостов.
     Определяет ОС и тип устройства через TTL, баннеры и MAC-адрес.
