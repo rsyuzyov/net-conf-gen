@@ -4,6 +4,7 @@ import logging
 import getpass
 import os
 import sys
+import ctypes
 from . import BaseConnector
 
 logger = logging.getLogger(__name__)
@@ -16,11 +17,48 @@ logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 class WinRMConnector(BaseConnector):
     # Подменяем kerberos-авторизацию на GSSAPI (wheels для 3.13)
     _kerberos_patched = False
+    _winkerberos_encoding_patched = False
+
+    @classmethod
+    def _patch_winkerberos_encoding(cls):
+        """Патчим winkerberos для правильной кодировки ошибок SSPI"""
+        if cls._winkerberos_encoding_patched:
+            return
+        try:
+            import winkerberos
+            original_step = winkerberos.authGSSClientStep
+            
+            def patched_step(state, challenge):
+                try:
+                    return original_step(state, challenge)
+                except Exception as e:
+                    error_msg = str(e)
+                    if '�' in error_msg and 'SSPI:' in error_msg:
+                        import re
+                        match = re.search(r'0x[0-9A-Fa-f]+', error_msg)
+                        error_code = int(match.group(), 16) if match else 0x80090308
+                        
+                        buffer = ctypes.create_unicode_buffer(512)
+                        result = ctypes.windll.kernel32.FormatMessageW(
+                            0x00001000, None, error_code, 0, buffer, 512, None
+                        )
+                        if result:
+                            fixed_msg = f"authGSSClientStep() failed: ('SSPI: InitializeSecurityContext: {buffer.value.strip()}',)"
+                            raise type(e)(fixed_msg) from e
+                    raise
+            
+            winkerberos.authGSSClientStep = patched_step
+            cls._winkerberos_encoding_patched = True
+        except:
+            pass
 
     @classmethod
     def _ensure_gssapi_auth(cls):
         if cls._kerberos_patched:
             return
+        
+        # Патчим winkerberos для правильной кодировки
+        cls._patch_winkerberos_encoding()
         try:
             from requests.auth import AuthBase
             from requests_gssapi import HTTPSPNEGOAuth
@@ -55,170 +93,115 @@ class WinRMConnector(BaseConnector):
             # Оставляем поведение по умолчанию, если gssapi не установлена
             pass
 
+    def _test_connection(self, session):
+        """Проверяет работоспособность подключения простой командой."""
+        try:
+            result = session.run_cmd('echo test')
+            return result.status_code == 0
+        except Exception:
+            return False
+
     def connect(self, ip, user=None, password=None, key_path=None):
-        # key_path не используется в WinRM (только логин/пароль или SSO)
         self._ensure_gssapi_auth()
         
-        # Определяем режим аутентификации
         if user and password:
-            # Аутентификация с логином/паролем
-            auth_mode = 'ntlm'
-            session = winrm.Session(f'http://{ip}:5985/wsman', auth=(user, password), transport='ntlm')
-            log_prefix = 'AUTH'
-        else:
-            # SSO аутентификация
-            auth_mode = 'sso'
-            log_prefix = 'SSO'
-            user = os.environ.get('USERNAME', getpass.getuser())
-            
-            # Определяем транспорты для SSO
-            if sys.platform == 'win32':
-                transports_to_try = ['credssp', 'kerberos']
-            else:
-                transports_to_try = ['kerberos']
+            # NTLM аутентификация
+            try:
+                session = winrm.Session(f'http://{ip}:5985/wsman', auth=(user, password), transport='ntlm')
+                
+                if not self._test_connection(session):
+                    return {'auth_failed': True, 'error': 'Connection test failed'}
+                
+                os_info = self._get_host_info(ip, session)
+                logger.info(f"{ip}: Успешное подключение через winrm (NTLM) user={user}")
+                
+                return {
+                    'success': True,
+                    'method': 'winrm',
+                    'hostname': os_info['hostname'],
+                    'os': os_info.get('os', 'Windows'),
+                    'os_type': 'windows',
+                    'type': 'workstation',
+                    'user': user,
+                    'mac': os_info.get('mac', ''),
+                    'kernel_version': os_info.get('kernel_version', '')
+                }
+            except Exception as e:
+                error_str = str(e).lower()
+                if any(kw in error_str for kw in ['401', 'unauthorized', 'authentication', 'credentials', 'logon failure']):
+                    return {'auth_failed': True, 'error': f'Authentication failed: {str(e)}'}
+                return {'error': f'Connection error: {str(e)}'}
         
-        # Для SSO пробуем разные транспорты
-        if auth_mode == 'sso':
-            for transport in transports_to_try:
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        session = winrm.Session(f'http://{ip}:5985/wsman', auth=(None, None), transport=transport)
-                        
-                        # Пробуем получить информацию
-                        os_info = self._collect_os_info(ip, session, log_prefix)
-                        
-                        if os_info is None:
-                            # Не удалось получить данные, пробуем следующий транспорт
-                            if transport == transports_to_try[-1]:
-                                return {'error': 'Failed to execute commands with all transports'}
-                            continue
-                        
-                        # Успешно получили данные
-                        logger.info(f"[{ip}] {log_prefix}: Successfully connected with transport {transport}")
-                        return {
-                            'success': True,
-                            'method': 'winrm',
-                            'hostname': os_info.get('hostname', ''),
-                            'os': os_info.get('os', 'Windows'),
-                            'os_type': 'windows',
-                            'type': 'workstation',
-                            'user': user,
-                            'mac': os_info.get('mac', ''),
-                            'kernel_version': os_info.get('kernel_version', '')
-                        }
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if any(keyword in error_str for keyword in ['401', 'unauthorized', 'authentication', 'credentials', 'logon failure']):
-                        logger.debug(f"WinRM SSO authentication failed for {ip} with transport {transport}: {e}")
-                        if transport == transports_to_try[-1]:
-                            return {'auth_failed': True, 'error': f'Authentication failed: {str(e)}'}
-                    if transport == transports_to_try[-1]:
-                        return {'error': f'Connection error with all transports. Last error: {str(e)}'}
-                    continue
-            
-            return {'error': 'All transports failed without specific error'}
+        # SSO аутентификация
+        user = os.environ.get('USERNAME', getpass.getuser())
+        transports = ['credssp', 'kerberos'] if sys.platform == 'win32' else ['kerberos']
         
-        # Для NTLM аутентификации
-        try:
-            os_info = self._collect_os_info(ip, session, log_prefix)
-            
-            if os_info is None:
-                return {'error': 'Failed to execute commands'}
-            
-            logger.info(f"[{ip}] {log_prefix}: Successfully authenticated with user {user}")
-            return {
-                'success': True,
-                'method': 'winrm',
-                'hostname': os_info.get('hostname', ''),
-                'os': os_info.get('os', 'Windows'),
-                'os_type': 'windows',
-                'type': 'workstation',
-                'user': user,
-                'mac': os_info.get('mac', ''),
-                'kernel_version': os_info.get('kernel_version', '')
-            }
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(keyword in error_str for keyword in ['401', 'unauthorized', 'authentication', 'credentials', 'logon failure']):
-                logger.debug(f"WinRM authentication failed for {ip}: {e}")
-                return {'auth_failed': True, 'error': f'Authentication failed: {str(e)}'}
-            logger.debug(f"WinRM connection failed for {ip}: {e}")
-            return {'error': f'Connection error: {str(e)}'}
+        for transport in transports:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    session = winrm.Session(f'http://{ip}:5985/wsman', auth=(None, None), transport=transport)
+                    
+                    if not self._test_connection(session):
+                        logger.debug(f"Пробуем WinRM SSO для {ip} с {transport}... тест подключения не прошёл")
+                        continue
+                    
+                    os_info = self._get_host_info(ip, session)
+                    logger.info(f"{ip}: Успешное подключение через winrm (SSO) user={user}")
+                    
+                    return {
+                        'success': True,
+                        'method': 'winrm',
+                        'hostname': os_info['hostname'],
+                        'os': os_info.get('os', 'Windows'),
+                        'os_type': 'windows',
+                        'type': 'workstation',
+                        'user': user,
+                        'mac': os_info.get('mac', ''),
+                        'kernel_version': os_info.get('kernel_version', '')
+                    }
+            except Exception as e:
+                error_str = str(e).lower()
+                logger.debug(f"Пробуем WinRM SSO для {ip} с {transport}... {e}")
+                if any(kw in error_str for kw in ['401', 'unauthorized', 'authentication', 'credentials', 'logon failure']):
+                    if transport == transports[-1]:
+                        return {'auth_failed': True, 'error': f'Authentication failed: {str(e)}'}
+        
+        return {'error': 'All transports failed'}
     
-    def _collect_os_info(self, ip, session, log_prefix):
-        """Собирает информацию об ОС. Возвращает dict с данными или None при ошибке."""
+    def _get_host_info(self, ip, session):
+        """Получает информацию о хосте. Подключение уже проверено."""
         os_info = {}
         
-        try:
-            # Получаем название ОС
-            logger.debug(f"[{ip}] {log_prefix}: Executing OS Caption query...")
-            result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Caption')
-            logger.debug(f"[{ip}] {log_prefix}: OS Caption - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
-            if result.status_code == 0:
-                os_info['os'] = result.std_out.decode().strip()
-                logger.debug(f"[{ip}] {log_prefix}: OS Caption result: '{os_info['os']}'")
-            else:
-                logger.debug(f"[{ip}] {log_prefix}: OS Caption failed, stderr: {result.std_err.decode()}")
-            
-            # Получаем версию ОС
-            logger.debug(f"[{ip}] {log_prefix}: Executing OS Version query...")
-            result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
-            logger.debug(f"[{ip}] {log_prefix}: OS Version - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
-            if result.status_code == 0:
-                os_info['kernel_version'] = result.std_out.decode().strip()
-                logger.debug(f"[{ip}] {log_prefix}: OS Version result: '{os_info['kernel_version']}'")
-            else:
-                logger.debug(f"[{ip}] {log_prefix}: OS Version failed, stderr: {result.std_err.decode()}")
-            
-            # Получаем hostname
-            logger.debug(f"[{ip}] {log_prefix}: Executing hostname command...")
-            result = session.run_cmd('hostname')
-            logger.debug(f"[{ip}] {log_prefix}: hostname - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
-            logger.debug(f"[{ip}] {log_prefix}: hostname raw stdout: {result.std_out}")
-            logger.debug(f"[{ip}] {log_prefix}: hostname raw stderr: {result.std_err}")
-            if result.status_code == 0:
-                os_info['hostname'] = result.std_out.decode().strip()
-                logger.debug(f"[{ip}] {log_prefix}: hostname result: '{os_info['hostname']}'")
-            else:
-                logger.debug(f"[{ip}] {log_prefix}: hostname failed, stderr: {result.std_err.decode()}")
-            
-            # Получаем MAC адрес основного сетевого адаптера
-            logger.debug(f"[{ip}] {log_prefix}: Executing MAC address query...")
-            result = session.run_ps('(Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1).MacAddress')
-            logger.debug(f"[{ip}] {log_prefix}: MAC query - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
-            if result.status_code == 0:
-                mac = result.std_out.decode().strip()
-                if mac:
-                    os_info['mac'] = mac.replace('-', ':')
-                    logger.debug(f"[{ip}] {log_prefix}: MAC address result: '{os_info['mac']}'")
-                else:
-                    logger.debug(f"[{ip}] {log_prefix}: MAC address query returned empty")
-            else:
-                logger.debug(f"[{ip}] {log_prefix}: MAC query failed, stderr: {result.std_err.decode()}")
-            
-            # Альтернативный способ для старых систем без Get-NetAdapter
-            if 'mac' not in os_info:
-                logger.debug(f"[{ip}] {log_prefix}: Trying alternative MAC query with getmac...")
-                result = session.run_cmd('getmac /v /fo csv | findstr /V "disabled"')
-                logger.debug(f"[{ip}] {log_prefix}: getmac - status_code={result.status_code}, stdout_len={len(result.std_out)}")
-                if result.status_code == 0:
-                    output = result.std_out.decode().strip()
-                    import re
-                    mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', output)
-                    if mac_match:
-                        os_info['mac'] = mac_match.group(0).replace('-', ':')
-                        logger.debug(f"[{ip}] {log_prefix}: Alternative MAC result: '{os_info['mac']}'")
-            
-            logger.debug(f"[{ip}] {log_prefix}: WinRM OS info collected: {os_info}")
-            
-        except Exception as e:
-            logger.debug(f"[{ip}] {log_prefix}: Failed to collect OS info via WinRM: {e}")
-            return None
+        # hostname
+        result = session.run_cmd('hostname')
+        if result.status_code == 0:
+            os_info['hostname'] = result.std_out.decode().strip()
         
-        # Проверяем что удалось получить хотя бы hostname
-        if not os_info.get('hostname'):
-            logger.debug(f"[{ip}] {log_prefix}: Connected but failed to get hostname")
-            return None
+        # OS
+        result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Caption')
+        if result.status_code == 0:
+            os_info['os'] = result.std_out.decode().strip()
+        
+        # Версия
+        result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
+        if result.status_code == 0:
+            os_info['kernel_version'] = result.std_out.decode().strip()
+        
+        # MAC
+        result = session.run_ps('(Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1).MacAddress')
+        if result.status_code == 0:
+            mac = result.std_out.decode().strip()
+            if mac:
+                os_info['mac'] = mac.replace('-', ':')
+        
+        # Альтернативный MAC для старых систем
+        if 'mac' not in os_info:
+            result = session.run_cmd('getmac /v /fo csv | findstr /V "disabled"')
+            if result.status_code == 0:
+                import re
+                mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', result.std_out.decode())
+                if mac_match:
+                    os_info['mac'] = mac_match.group(0).replace('-', ':')
         
         return os_info

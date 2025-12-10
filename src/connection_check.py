@@ -261,7 +261,7 @@ class ConnectionChecker:
                             'status': 'auth_failed',
                             'error': info.get('error', 'Authentication failed')
                         })
-                    elif info:
+                    elif info and info.get('success'):
                         # Успешное подключение через SSO
                         existing_host = self.storage.get_host(ip)
                         existing_vendor = existing_host.get('vendor', '')
@@ -282,11 +282,12 @@ class ConnectionChecker:
                         })
                         # Продолжаем проверять другие протоколы
                     else:
-                        logger.debug(f"WinRM SSO вернул None для {ip}")
+                        error_msg = info.get('error', 'Connection failed') if info else 'No response'
+                        logger.debug(f"WinRM SSO не удалось для {ip}: {error_msg}")
                         result['auth_attempts'].append({
                             'method': 'winrm',
                             'status': 'failed',
-                            'error': 'Connection failed'
+                            'error': error_msg
                         })
                 except Exception as e:
                     logger.debug(f"Ошибка WinRM SSO для {ip}: {e}")
