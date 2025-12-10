@@ -95,6 +95,7 @@ class ConnectionChecker:
             'vendor': host_info.get('vendor'),
             'hostname': '',
             'os': '',
+            'os_type': 'linux',
             'type': 'unknown',
             'deep_scan_status': 'failed',
             'auth_method': None,
@@ -108,8 +109,8 @@ class ConnectionChecker:
         is_linux = 22 in open_ports
         is_mikrotik = 8291 in open_ports or 8728 in open_ports
         
-        # Также проверяем сохраненный тип хоста
-        if not is_windows and host_info.get('type') == 'windows':
+        # Также проверяем сохраненный тип ОС
+        if not is_windows and host_info.get('os_type') == 'windows':
             is_windows = True
         
         logger.debug(f"{ip}: Windows={is_windows}, Linux={is_linux}, MikroTik={is_mikrotik}")
@@ -117,7 +118,8 @@ class ConnectionChecker:
         # Если обнаружен MikroTik
         if is_mikrotik:
             result['os'] = 'RouterOS'
-            result['type'] = 'network'
+            result['os_type'] = 'linux'
+            result['type'] = 'mikrotik'
             result['device_type'] = 'mikrotik'
             logger.debug(f"{ip}: Определен как MikroTik")
         

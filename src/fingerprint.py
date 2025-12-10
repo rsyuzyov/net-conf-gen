@@ -152,13 +152,13 @@ class Fingerprinter:
 
         # Windows: 128
         if 110 <= ttl <= 128:
-            return {'os': 'Windows', 'type': 'workstation'}
+            return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
         # Linux/Unix: 64
         elif 50 <= ttl <= 64:
-            return {'os': 'Linux/Unix', 'type': 'server'}
+            return {'os': 'Linux/Unix', 'os_type': 'linux', 'type': 'server'}
         # Network device: 255
         elif ttl > 200:
-            return {'os': 'Network Device', 'type': 'network'}
+            return {'os': 'Network Device', 'os_type': 'linux', 'type': 'network'}
 
         return {}
 
@@ -202,10 +202,12 @@ class Fingerprinter:
             ssh_banner = banners[22]
             if 'OpenSSH' in ssh_banner:
                 result['os'] = 'Linux/Unix (OpenSSH)'
+                result['os_type'] = 'linux'
                 result['type'] = 'server'
                 return result
             elif 'dropbear' in ssh_banner.lower():
                 result['os'] = 'Embedded Linux (Dropbear)'
+                result['os_type'] = 'linux'
                 result['type'] = 'iot'
                 return result
 
@@ -222,14 +224,17 @@ class Fingerprinter:
 
                     if 'nginx' in server_lower or 'apache' in server_lower:
                         result['os'] = f'Linux ({server})'
+                        result['os_type'] = 'linux'
                         result['type'] = 'server'
                         return result
                     elif 'iis' in server_lower or 'microsoft' in server_lower:
                         result['os'] = f'Windows ({server})'
+                        result['os_type'] = 'windows'
                         result['type'] = 'server'
                         return result
                     elif 'printer' in server_lower or 'cups' in server_lower:
                         result['os'] = 'Printer'
+                        result['os_type'] = 'linux'
                         result['type'] = 'printer'
                         return result
 
@@ -238,10 +243,12 @@ class Fingerprinter:
             ftp_banner = banners[21]
             if 'Microsoft FTP' in ftp_banner or 'Windows' in ftp_banner:
                 result['os'] = 'Windows (FTP)'
+                result['os_type'] = 'windows'
                 result['type'] = 'server'
                 return result
             elif 'vsFTPd' in ftp_banner or 'ProFTPD' in ftp_banner:
                 result['os'] = 'Linux (FTP)'
+                result['os_type'] = 'linux'
                 result['type'] = 'server'
                 return result
 
@@ -270,6 +277,7 @@ class Fingerprinter:
         result = {
             'os': 'Unknown',
             'kernel_version': '',
+            'os_type': 'linux',
             'type': 'unknown',
             'hostname': '',
             'confidence': 'low',
@@ -290,9 +298,10 @@ class Fingerprinter:
             result['details']['ttl'] = ttl
             ttl_info = self._analyze_ttl(ttl)
             
-            if ttl_info.get('type'):
+            if ttl_info.get('os_type'):
                 result['os'] = ttl_info['os']
-                result['type'] = ttl_info['type']
+                result['os_type'] = ttl_info['os_type']
+                result['type'] = ttl_info.get('type', 'unknown')
                 result['confidence'] = 'medium'
                 result['method'] = 'ttl'
                 logger.debug(f"Fingerprint {ip} via TTL: {ttl_info}")
@@ -300,9 +309,10 @@ class Fingerprinter:
 
         # 2. Banner Grabbing (более точный)
         banner_info = self._analyze_banners(ip)
-        if banner_info.get('type'):
+        if banner_info.get('os_type'):
             result['os'] = banner_info['os']
-            result['type'] = banner_info['type']
+            result['os_type'] = banner_info['os_type']
+            result['type'] = banner_info.get('type', 'unknown')
             result['confidence'] = 'high'
             result['method'] = 'banner' if not ttl else 'ttl+banner'
             logger.info(f"Fingerprint {ip} via banner: {banner_info}")
@@ -312,6 +322,15 @@ class Fingerprinter:
         if vendor:
             device_type = self._detect_device_type_by_vendor(vendor)
             if device_type:
+                # Маппинг типов устройств на os_type
+                os_type_map = {
+                    'mobile': 'android',
+                    'iot': 'linux',
+                    'network': 'linux',
+                    'printer': 'linux',
+                    'mikrotik': 'linux'
+                }
+                result['os_type'] = os_type_map.get(device_type, 'linux')
                 result['type'] = device_type
                 result['os'] = {
                     'mobile': 'Android/iOS',
@@ -334,16 +353,17 @@ class Fingerprinter:
         """
         Обратная совместимость со старым API.
         
-        Старый формат:
-            {'os': str, 'hostname': str, 'type': str}
+        Формат:
+            {'os': str, 'hostname': str, 'os_type': str, 'type': str}
         """
         # Вызываем новый метод
         fp_result = self.lightweight_fingerprint(ip, vendor=vendor, mac=None)
         
-        # Возвращаем в старом формате
+        # Возвращаем в формате
         return {
             'os': fp_result['os'],
             'hostname': fp_result.get('hostname', ''),
+            'os_type': fp_result['os_type'],
             'type': fp_result['type']
         }
 
@@ -393,6 +413,7 @@ class Fingerprinter:
         # Обновляем информацию в storage
         update_data = {
             'os': fp_result.get('os', 'Unknown'),
+            'os_type': fp_result.get('os_type', 'linux'),
             'type': fp_result.get('type', 'unknown'),
             'hostname': fp_result.get('hostname', ''),
             'fingerprint_method': fp_result.get('method', 'none'),
@@ -405,8 +426,9 @@ class Fingerprinter:
         
         self.storage.update_host(ip, update_data)
         
-        logger.info(f"  OS: {fp_result.get('os')}, Type: {fp_result.get('type')}, "
-                   f"Method: {fp_result.get('method')}, Confidence: {fp_result.get('confidence')}")
+        logger.info(f"  OS: {fp_result.get('os')}, OS Type: {fp_result.get('os_type')}, "
+                   f"Type: {fp_result.get('type')}, Method: {fp_result.get('method')}, "
+                   f"Confidence: {fp_result.get('confidence')}")
     
     def _fingerprint_all_hosts(self, force=False):
         """Fingerprint для всех хостов с deep_scan_status != 'completed'."""

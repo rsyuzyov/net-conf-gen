@@ -73,7 +73,8 @@ class PsExecConnector(BaseConnector):
                 return {
                     'hostname': hostname,
                     'os': os_name,
-                    'type': 'windows',
+                    'os_type': 'windows',
+                    'type': 'workstation',
                     'user': user,
                     'auth_method': 'psexec',
                     'kernel_version': kernel_version

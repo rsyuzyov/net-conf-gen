@@ -71,7 +71,7 @@ class ReportGenerator:
                 f.write(f"{h['ip']}\n")
 
     def _generate_csv(self, hosts):
-        keys = ['ip', 'mac', 'vendor', 'hostname', 'os', 'type', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'last_updated']
+        keys = ['ip', 'mac', 'vendor', 'hostname', 'os', 'os_type', 'type', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'last_updated']
         with open(os.path.join(self.output_dir, 'scan_report.csv'), 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
             writer.writeheader()
@@ -113,19 +113,20 @@ class ReportGenerator:
             name = h.get('hostname') if h.get('hostname') else ip
             
             group = 'unknown'
-            if h.get('type') == 'windows':
+            os_type = h.get('os_type', '').lower()
+            if os_type == 'windows':
                 group = 'windows'
-            elif h.get('type') == 'linux':
-                group = 'linux'
-            elif h.get('type') == 'mikrotik':
-                group = 'mikrotik'
-            else:
-                # Check if it's MikroTik by vendor (for network, server, or unknown types)
+            elif os_type == 'linux':
+                # Проверяем, не MikroTik ли это
                 vendor = h.get('vendor', '').lower()
                 if 'mikrotik' in vendor or 'routerboard' in vendor:
                     group = 'mikrotik'
-                elif h.get('type') == 'network':
-                    group = 'unknown'  # Other network equipment goes to unknown
+                else:
+                    group = 'linux'
+            elif os_type == 'android':
+                group = 'unknown'  # Android устройства в unknown
+            else:
+                group = 'unknown'
             
             inventory['all']['children'][group]['hosts'][name] = {'ansible_host': ip}
             
@@ -223,11 +224,11 @@ class ReportGenerator:
         # Build table rows
         table_rows = []
         for host in hosts:
-            host_type = host.get('type', '')
+            os_type = host.get('os_type', '')
             deep_scan_status = host.get('deep_scan_status', '')
             
             # Determine CSS class for host type
-            type_class = f"host-{host_type}"
+            type_class = f"host-{os_type}"
             
             # Add deep scan completed class if applicable
             row_class = type_class
@@ -240,6 +241,7 @@ class ReportGenerator:
                     <td>{escape_value(self._get_vendor(host))}</td>
                     <td>{escape_value(host.get('hostname'))}</td>
                     <td>{escape_value(host.get('os'))}</td>
+                    <td>{escape_value(host.get('os_type'))}</td>
                     <td>{escape_value(host.get('type'))}</td>
                     <td>{escape_value(host.get('deep_scan_status'))}</td>
                     <td>{escape_value(host.get('auth_method'))}</td>

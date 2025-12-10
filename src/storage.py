@@ -45,13 +45,13 @@ class Storage:
         """
         Updates information for a specific host.
         Does not overwrite existing non-empty values with empty strings for:
-        vendor, hostname, os, type
+        vendor, hostname, os, os_type, type
         """
         if ip not in self.data:
             self.data[ip] = {}
         
         # Поля, которые не должны перезаписываться пустыми значениями
-        protected_fields = ['vendor', 'hostname', 'os', 'type']
+        protected_fields = ['vendor', 'hostname', 'os', 'os_type', 'type']
         
         # Фильтруем info: не перезаписываем защищенные поля, если новое значение пустое
         filtered_info = {}
