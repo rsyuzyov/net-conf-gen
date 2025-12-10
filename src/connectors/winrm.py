@@ -71,30 +71,56 @@ class WinRMConnector(BaseConnector):
             
             try:
                 # Получаем название ОС
+                logger.debug(f"[{ip}] AUTH: Executing OS Caption query...")
                 result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Caption')
+                logger.debug(f"[{ip}] AUTH: OS Caption - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
                 if result.status_code == 0:
                     os_info['os'] = result.std_out.decode().strip()
+                    logger.debug(f"[{ip}] AUTH: OS Caption result: '{os_info['os']}'")
+                else:
+                    logger.debug(f"[{ip}] AUTH: OS Caption failed, stderr: {result.std_err.decode()}")
                 
                 # Получаем версию ОС
+                logger.debug(f"[{ip}] AUTH: Executing OS Version query...")
                 result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
+                logger.debug(f"[{ip}] AUTH: OS Version - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
                 if result.status_code == 0:
                     os_info['kernel_version'] = result.std_out.decode().strip()
+                    logger.debug(f"[{ip}] AUTH: OS Version result: '{os_info['kernel_version']}'")
+                else:
+                    logger.debug(f"[{ip}] AUTH: OS Version failed, stderr: {result.std_err.decode()}")
                 
                 # Получаем hostname
+                logger.debug(f"[{ip}] AUTH: Executing hostname command...")
                 result = session.run_cmd('hostname')
+                logger.debug(f"[{ip}] AUTH: hostname - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
+                logger.debug(f"[{ip}] AUTH: hostname raw stdout: {result.std_out}")
+                logger.debug(f"[{ip}] AUTH: hostname raw stderr: {result.std_err}")
                 if result.status_code == 0:
                     os_info['hostname'] = result.std_out.decode().strip()
+                    logger.debug(f"[{ip}] AUTH: hostname result: '{os_info['hostname']}'")
+                else:
+                    logger.debug(f"[{ip}] AUTH: hostname failed, stderr: {result.std_err.decode()}")
                 
                 # Получаем MAC адрес основного сетевого адаптера
+                logger.debug(f"[{ip}] AUTH: Executing MAC address query...")
                 result = session.run_ps('(Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1).MacAddress')
+                logger.debug(f"[{ip}] AUTH: MAC query - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
                 if result.status_code == 0:
                     mac = result.std_out.decode().strip()
                     if mac:
                         os_info['mac'] = mac.replace('-', ':')  # Конвертируем формат Windows в стандартный
+                        logger.debug(f"[{ip}] AUTH: MAC address result: '{os_info['mac']}'")
+                    else:
+                        logger.debug(f"[{ip}] AUTH: MAC address query returned empty")
+                else:
+                    logger.debug(f"[{ip}] AUTH: MAC query failed, stderr: {result.std_err.decode()}")
                 
                 # Альтернативный способ для старых систем без Get-NetAdapter
                 if 'mac' not in os_info:
+                    logger.debug(f"[{ip}] AUTH: Trying alternative MAC query with getmac...")
                     result = session.run_cmd('getmac /v /fo csv | findstr /V "disabled"')
+                    logger.debug(f"[{ip}] AUTH: getmac - status_code={result.status_code}, stdout_len={len(result.std_out)}")
                     if result.status_code == 0:
                         output = result.std_out.decode().strip()
                         # Парсим первый MAC из вывода
@@ -102,11 +128,12 @@ class WinRMConnector(BaseConnector):
                         mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', output)
                         if mac_match:
                             os_info['mac'] = mac_match.group(0).replace('-', ':')
+                            logger.debug(f"[{ip}] AUTH: Alternative MAC result: '{os_info['mac']}'")
                 
-                logger.debug(f"WinRM OS info collected for {ip}: {os_info}")
+                logger.debug(f"[{ip}] AUTH: WinRM OS info collected: {os_info}")
                 
             except Exception as e:
-                logger.debug(f"Failed to collect OS info via WinRM for {ip}: {e}")
+                logger.debug(f"[{ip}] AUTH: Failed to collect OS info via WinRM: {e}", exc_info=True)
                 # Продолжаем без детальной информации
             
             # Формируем результат
@@ -153,30 +180,56 @@ class WinRMConnector(BaseConnector):
                     
                     try:
                         # Получаем название ОС
+                        logger.debug(f"[{ip}] SSO: Executing OS Caption query...")
                         result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Caption')
+                        logger.debug(f"[{ip}] SSO: OS Caption - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
                         if result.status_code == 0:
                             os_info['os'] = result.std_out.decode().strip()
+                            logger.debug(f"[{ip}] SSO: OS Caption result: '{os_info['os']}'")
+                        else:
+                            logger.debug(f"[{ip}] SSO: OS Caption failed, stderr: {result.std_err.decode()}")
                         
                         # Получаем версию ОС
+                        logger.debug(f"[{ip}] SSO: Executing OS Version query...")
                         result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
+                        logger.debug(f"[{ip}] SSO: OS Version - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
                         if result.status_code == 0:
                             os_info['kernel_version'] = result.std_out.decode().strip()
+                            logger.debug(f"[{ip}] SSO: OS Version result: '{os_info['kernel_version']}'")
+                        else:
+                            logger.debug(f"[{ip}] SSO: OS Version failed, stderr: {result.std_err.decode()}")
                         
                         # Получаем hostname
+                        logger.debug(f"[{ip}] SSO: Executing hostname command...")
                         result = session.run_cmd('hostname')
+                        logger.debug(f"[{ip}] SSO: hostname - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
+                        logger.debug(f"[{ip}] SSO: hostname raw stdout: {result.std_out}")
+                        logger.debug(f"[{ip}] SSO: hostname raw stderr: {result.std_err}")
                         if result.status_code == 0:
                             os_info['hostname'] = result.std_out.decode().strip()
+                            logger.debug(f"[{ip}] SSO: hostname result: '{os_info['hostname']}'")
+                        else:
+                            logger.debug(f"[{ip}] SSO: hostname failed, stderr: {result.std_err.decode()}")
                         
                         # Получаем MAC адрес основного сетевого адаптера
+                        logger.debug(f"[{ip}] SSO: Executing MAC address query...")
                         result = session.run_ps('(Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1).MacAddress')
+                        logger.debug(f"[{ip}] SSO: MAC query - status_code={result.status_code}, stdout_len={len(result.std_out)}, stderr_len={len(result.std_err)}")
                         if result.status_code == 0:
                             mac = result.std_out.decode().strip()
                             if mac:
                                 os_info['mac'] = mac.replace('-', ':')  # Конвертируем формат Windows в стандартный
+                                logger.debug(f"[{ip}] SSO: MAC address result: '{os_info['mac']}'")
+                            else:
+                                logger.debug(f"[{ip}] SSO: MAC address query returned empty")
+                        else:
+                            logger.debug(f"[{ip}] SSO: MAC query failed, stderr: {result.std_err.decode()}")
                         
                         # Альтернативный способ для старых систем без Get-NetAdapter
                         if 'mac' not in os_info:
+                            logger.debug(f"[{ip}] SSO: Trying alternative MAC query with getmac...")
                             result = session.run_cmd('getmac /v /fo csv | findstr /V "disabled"')
+                            logger.debug(f"[{ip}] SSO: getmac - status_code={result.status_code}, stdout_len={len(result.std_out)}")
                             if result.status_code == 0:
                                 output = result.std_out.decode().strip()
                                 # Парсим первый MAC из вывода
@@ -184,11 +237,12 @@ class WinRMConnector(BaseConnector):
                                 mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', output)
                                 if mac_match:
                                     os_info['mac'] = mac_match.group(0).replace('-', ':')
+                                    logger.debug(f"[{ip}] SSO: Alternative MAC result: '{os_info['mac']}'")
                         
-                        logger.debug(f"WinRM OS info collected for {ip} (SSO): {os_info}")
+                        logger.debug(f"[{ip}] SSO: WinRM OS info collected: {os_info}")
                         
                     except Exception as e:
-                        logger.debug(f"Failed to collect OS info via WinRM for {ip} (SSO): {e}")
+                        logger.debug(f"[{ip}] SSO: Failed to collect OS info via WinRM: {e}", exc_info=True)
                         # Продолжаем без детальной информации
                     
                     # Формируем результат
