@@ -5,7 +5,7 @@
 - ansible inventory
 - ssh_config
 - файл hosts.txt
-- детальные отчеты в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report_example.html), csv, json
+- детальные отчеты в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report.html), csv, json
 
 ## Установка
 
@@ -27,7 +27,7 @@ python main.py
 Можно заранее создать руками копированием из [config.yaml.example](./config.yaml.example)  
 Далее создаст ./output/scan_state.json - главный файл, дополняемый на каждом этапе работы  
 После окончания работы берем данные в подходящем формате в ./output  
-Пример отчета в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report_example.html)  
+Пример отчета в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report.html)  
 
 Варианты запуска:
 
