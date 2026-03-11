@@ -1,4 +1,5 @@
 import socket
+import ssl
 import logging
 import subprocess
 import platform
@@ -152,6 +153,62 @@ class Fingerprinter:
             pass
         return ""
 
+    # ===== SSL Certificate =====
+    def _get_ssl_cert_info(self, ip, port=443, timeout=3):
+        """Получить информацию из SSL/TLS-сертификата.
+
+        Returns:
+            dict: {'cn': str, 'issuer_cn': str, 'not_after': str} или пустой dict
+        """
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            with socket.create_connection((ip, port), timeout=timeout) as raw:
+                with ctx.wrap_socket(raw, server_hostname=ip) as s:
+                    cert_bin = s.getpeercert(True)
+                    if not cert_bin:
+                        return {}
+
+                    # Парсим через openssl (если доступен) или DER → PEM → subprocess
+                    pem = ssl.DER_cert_to_PEM_cert(cert_bin)
+                    result = {}
+
+                    # Subject CN
+                    cn_match = re.search(r'subject.*?CN\s*=\s*([^\r\n,/]+)',
+                                         self._openssl_x509_text(pem))
+                    if cn_match:
+                        result['cn'] = cn_match.group(1).strip()
+
+                    # Issuer CN
+                    issuer_match = re.search(r'issuer.*?CN\s*=\s*([^\r\n,/]+)',
+                                             self._openssl_x509_text(pem))
+                    if issuer_match:
+                        result['issuer_cn'] = issuer_match.group(1).strip()
+
+                    return result
+        except Exception as e:
+            logger.debug(f"SSL cert scrape failed for {ip}:{port}: {e}")
+            return {}
+
+    def _openssl_x509_text(self, pem_cert):
+        """Получить текстовое представление сертификата через openssl."""
+        try:
+            r = subprocess.run(
+                ['openssl', 'x509', '-noout', '-subject', '-issuer'],
+                input=pem_cert, capture_output=True, text=True, timeout=5
+            )
+            return r.stdout
+        except Exception:
+            # Fallback: парсим PEM вручную через ssl модуль
+            try:
+                cert = ssl.PEM_cert_to_DER_cert(pem_cert)
+                # Простой regex по base64 — не даст CN, вернём пустую строку
+                return ""
+            except Exception:
+                return ""
+
     # ===== Port-based Detection =====
     def _detect_by_ports(self, open_ports):
         """Определение типа устройства по характерным комбинациям портов."""
@@ -171,6 +228,10 @@ class Fingerprinter:
         # WinRM (5985) = 100% Windows
         if 5985 in ports:
             return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
+
+        # Kerio Control: порт 4081 (админка) или 4040
+        if ports & {4081, 4040}:
+            return {'os': 'Kerio Control', 'os_type': 'linux', 'type': 'network'}
 
         return None
 
@@ -528,7 +589,34 @@ class Fingerprinter:
             if http_title:
                 update_data['http_title'] = http_title
                 logger.info(f"  HTTP title: {http_title}")
-        
+
+        # SSL-сертификат для хостов с портом 443
+        if 443 in open_ports:
+            cert_info = self._get_ssl_cert_info(ip, port=443)
+            if cert_info:
+                update_data['ssl_cert'] = cert_info
+                ssl_cn = cert_info.get('cn', '')
+                ssl_issuer = cert_info.get('issuer_cn', '')
+                logger.info(f"  SSL cert: CN={ssl_cn}, Issuer={ssl_issuer}")
+
+                # CN → hostname (если ещё не определён и CN похож на hostname)
+                if ssl_cn and not update_data.get('hostname') and not current_hostname:
+                    # Фильтруем IP-адреса и wildcard-сертификаты
+                    if not ssl_cn.startswith('*') and not re.match(r'^\d+\.\d+\.\d+\.\d+$', ssl_cn):
+                        update_data['hostname'] = ssl_cn.split('.')[0]
+                        logger.info(f"  Hostname via SSL CN: {update_data['hostname']}")
+
+                # Issuer → уточнение ОС
+                issuer_lower = ssl_issuer.lower()
+                if 'kerio' in issuer_lower and update_data.get('os', 'Unknown') in ('Unknown', 'Linux/Unix'):
+                    update_data['os'] = 'Kerio Control'
+                    update_data['type'] = 'network'
+                    logger.info(f"  OS via SSL issuer: Kerio Control")
+                elif 'proxmox' in issuer_lower and update_data.get('os', 'Unknown') in ('Unknown', 'Linux/Unix'):
+                    update_data['os'] = 'Proxmox VE'
+                    update_data['type'] = 'server'
+                    logger.info(f"  OS via SSL issuer: Proxmox VE")
+
         # Определение принтеров по hostname и http_title
         final_hostname = update_data.get('hostname') or current_hostname or ''
         http_title = update_data.get('http_title', '')
