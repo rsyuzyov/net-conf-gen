@@ -4,6 +4,9 @@ from . import BaseConnector
 
 logger = logging.getLogger(__name__)
 
+# Подавляем traceback'и из внутреннего потока paramiko.transport
+logging.getLogger('paramiko.transport').setLevel(logging.CRITICAL)
+
 class SSHConnector(BaseConnector):
     def connect(self, ip, user, password=None, key_path=None):
         client = paramiko.SSHClient()
@@ -82,6 +85,15 @@ class SSHConnector(BaseConnector):
             # Ошибка аутентификации - протокол работает, но учетные данные неверные
             logger.debug(f"SSH authentication failed for {ip}: {e}")
             return {'auth_failed': True, 'error': 'Authentication failed'}
+        except paramiko.ssh_exception.IncompatiblePeer as e:
+            logger.warning(f"SSH {ip}: несовместимый SSH-сервер (старые алгоритмы ключей)")
+            return None
+        except paramiko.SSHException as e:
+            logger.warning(f"SSH {ip}: ошибка протокола SSH: {e}")
+            return None
+        except (OSError, TimeoutError) as e:
+            logger.debug(f"SSH {ip}: сетевая ошибка: {e}")
+            return None
         except Exception as e:
-            logger.debug(f"SSH connection failed for {ip}: {e}")
+            logger.warning(f"SSH {ip}: неожиданная ошибка: {type(e).__name__} - {e}")
             return None

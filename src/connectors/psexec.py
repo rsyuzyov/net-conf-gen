@@ -5,6 +5,15 @@ from . import BaseConnector
 
 logger = logging.getLogger(__name__)
 
+def _decode_output(data: bytes) -> str:
+    """Декодирует вывод cmd.exe: utf-8 → cp866 → cp1251 → latin-1."""
+    for enc in ('utf-8', 'cp866', 'cp1251', 'latin-1'):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode('utf-8', errors='replace')
+
 class PsExecConnector(BaseConnector):
     def connect(self, ip, user, password=None, key_path=None):
         """Try connecting via PsExec (pypsexec) with credentials.
@@ -36,7 +45,7 @@ class PsExecConnector(BaseConnector):
 
                 # Get Hostname
                 stdout, stderr, rc = c.run_executable("cmd.exe", arguments="/c hostname")
-                hostname = stdout.decode('utf-8').strip()
+                hostname = _decode_output(stdout).strip()
 
                 if not hostname:
                     logger.debug("PsExec: Empty hostname returned")
@@ -49,7 +58,7 @@ class PsExecConnector(BaseConnector):
                     "cmd.exe",
                     arguments="/c wmic os get Caption /value",
                 )
-                os_output = stdout_os.decode('utf-8').strip()
+                os_output = _decode_output(stdout_os).strip()
 
                 os_name = "Windows"
                 for line in os_output.split('\n'):
@@ -62,7 +71,7 @@ class PsExecConnector(BaseConnector):
                     "cmd.exe",
                     arguments="/c wmic os get Version /value",
                 )
-                version_output = stdout_ver.decode('utf-8').strip()
+                version_output = _decode_output(stdout_ver).strip()
                 
                 kernel_version = ""
                 for line in version_output.split('\n'):
@@ -99,13 +108,22 @@ class PsExecConnector(BaseConnector):
             logger.debug(f"PsExec: SMB connection closed for {ip}: {e}")
             return None
         except Exception as e:
-            error_str = str(e).lower()
+            error_str = str(e)
+            error_type = type(e).__name__
             # Проверяем, является ли это ошибкой аутентификации
-            if any(keyword in error_str for keyword in ['authentication', 'credentials', 'logon', 'access denied', 'permission denied']):
+            if any(keyword in error_str.lower() for keyword in ['authentication', 'credentials', 'logon', 'access denied', 'permission denied']):
                 logger.debug(f"PsExec: Authentication error for {user}@{ip}: {e}")
                 return {'auth_failed': True, 'error': 'Authentication failed'}
-            logger.warning(f"PsExec: Connection failed to {ip} with user {user}: {type(e).__name__} - {e}")
-            import traceback
-            logger.debug(f"PsExec traceback: {traceback.format_exc()}")
+            # Известные инфраструктурные ошибки — понятные сообщения
+            if 'Connection timeout' in error_str:
+                logger.warning(f"PsExec {ip}: таймаут SMB-подключения (хост не отвечает на SMB)")
+            elif 'encryption is required' in error_str:
+                logger.warning(f"PsExec {ip}: хост требует SMB-шифрование (не поддерживается клиентом)")
+            elif 'PIPE_BROKEN' in error_str or 'pipe' in error_str.lower():
+                logger.warning(f"PsExec {ip}: соединение разорвано хостом (нет прав или политика)")
+            else:
+                logger.warning(f"PsExec {ip}: ошибка подключения: {error_type} - {error_str}")
+                import traceback
+                logger.debug(f"PsExec traceback: {traceback.format_exc()}")
             return None
 
