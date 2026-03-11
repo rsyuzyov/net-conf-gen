@@ -117,7 +117,7 @@ class WinRMConnector(BaseConnector):
                 
                 return {
                     'success': True,
-                    'method': 'winrm',
+                    'auth_method': 'winrm',
                     'hostname': os_info['hostname'],
                     'os': os_info.get('os', 'Windows'),
                     'os_type': 'windows',
@@ -151,7 +151,7 @@ class WinRMConnector(BaseConnector):
                     
                     return {
                         'success': True,
-                        'method': 'winrm',
+                        'auth_method': 'winrm',
                         'hostname': os_info['hostname'],
                         'os': os_info.get('os', 'Windows'),
                         'os_type': 'windows',

@@ -78,6 +78,21 @@ class PsExecConnector(BaseConnector):
                     if 'version=' in line.lower():
                         kernel_version = line.split('=', 1)[1].strip()
                         break
+                # Get MAC address
+                mac = ""
+                try:
+                    stdout_mac, stderr_mac, rc_mac = c.run_executable(
+                        "cmd.exe",
+                        arguments='/c getmac /fo csv /nh | findstr /V "disconnected"',
+                    )
+                    mac_output = _decode_output(stdout_mac).strip()
+                    if mac_output:
+                        import re
+                        mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}', mac_output)
+                        if mac_match:
+                            mac = mac_match.group(0).replace('-', ':').lower()
+                except Exception as mac_err:
+                    logger.debug(f"PsExec: Failed to get MAC for {ip}: {mac_err}")
 
                 return {
                     'hostname': hostname,
@@ -86,7 +101,8 @@ class PsExecConnector(BaseConnector):
                     'type': 'workstation',
                     'user': user,
                     'auth_method': 'psexec',
-                    'kernel_version': kernel_version
+                    'kernel_version': kernel_version,
+                    'mac': mac
                 }
             finally:
                 if service_created:

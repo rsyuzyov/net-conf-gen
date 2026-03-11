@@ -48,15 +48,23 @@ class SSHConnector(BaseConnector):
                 if distribution:
                     os_info['distribution'] = distribution
                 
-                # Получаем первый MAC адрес
-                stdin, stdout, stderr = client.exec_command('ip link show 2>/dev/null | grep ether | head -n1 | awk \'{print $2}\'', timeout=5)
+                # Получаем первый MAC адрес (не loopback)
+                stdin, stdout, stderr = client.exec_command(
+                    "cat /sys/class/net/*/address 2>/dev/null | grep -v '00:00:00:00:00:00' | head -n1",
+                    timeout=5
+                )
                 mac = stdout.read().decode().strip()
                 if not mac:
-                    # Fallback для систем без ip команды
-                    stdin, stdout, stderr = client.exec_command('ifconfig 2>/dev/null | grep ether | head -n1 | awk \'{print $2}\'', timeout=5)
+                    # Fallback через ip link
+                    stdin, stdout, stderr = client.exec_command(
+                        "ip link show 2>/dev/null | grep 'link/ether' | head -n1 | cut -d' ' -f6",
+                        timeout=5
+                    )
                     mac = stdout.read().decode().strip()
-                if mac:
-                    os_info['mac'] = mac
+                # Валидация MAC
+                import re
+                if mac and re.match(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$', mac):
+                    os_info['mac'] = mac.lower()
                     
                 logger.debug(f"SSH OS info collected for {ip}: {os_info}")
                 
@@ -70,7 +78,7 @@ class SSHConnector(BaseConnector):
             # ВАЖНО: НЕ сохраняем key_path для безопасности
             result = {
                 'success': True,
-                'method': 'ssh',
+                'auth_method': 'ssh',
                 'hostname': os_info.get('hostname', ''),
                 'os': os_info.get('distribution', os_info.get('os', 'Linux')),
                 'os_type': 'linux',
