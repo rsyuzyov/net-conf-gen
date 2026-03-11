@@ -94,50 +94,86 @@ class ReportGenerator:
         with open(os.path.join(self.output_dir, 'scan_report.yaml'), 'w', encoding='utf-8') as f:
             yaml.dump(data, f, allow_unicode=True)
 
+    def _classify_host_group(self, host):
+        """Определяет основную и дочернюю группу хоста для inventory."""
+        os_type = host.get('os_type', '').lower()
+        host_type = host.get('type', '').lower()
+        vendor = host.get('vendor', '').lower()
+        os_name = host.get('os', '').lower()
+
+        # MikroTik — три признака
+        if (host_type == 'mikrotik'
+                or 'mikrotik' in vendor or 'routerboard' in vendor
+                or 'mikrotik' in os_name):
+            return 'mikrotik', None
+
+        # Принтеры
+        if host_type == 'printer':
+            return 'printers', None
+
+        # Камеры
+        if host_type == 'camera':
+            return 'cameras', None
+
+        # Сетевое оборудование (не MikroTik)
+        if host_type == 'network':
+            return 'network_devices', None
+
+        # Windows → подгруппы
+        if os_type == 'windows':
+            if host_type == 'server':
+                return 'windows', 'windows_servers'
+            return 'windows', 'windows_workstations'
+
+        # Linux → подгруппа
+        if os_type == 'linux':
+            if host_type == 'server':
+                return 'linux', 'linux_servers'
+            return 'linux', None
+
+        # Android / mobile / IoT / unknown
+        return 'unknown', None
+
     def _generate_ansible_inventory(self, hosts):
-        inventory = {
-            'all': {
-                'children': {
-                    'windows': {'hosts': {}},
-                    'linux': {'hosts': {}},
-                    'mikrotik': {'hosts': {}},
-                    'unknown': {'hosts': {}}
-                }
-            }
+        # Все группы верхнего уровня
+        groups = [
+            'windows', 'linux', 'mikrotik',
+            'network_devices', 'printers', 'cameras', 'unknown'
+        ]
+        # Подгруппы
+        subgroups = {
+            'windows': ['windows_servers', 'windows_workstations'],
+            'linux': ['linux_servers'],
         }
-        
+
+        # Инициализация структуры inventory
+        inventory = {'all': {'children': {}}}
+        for g in groups:
+            if g in subgroups:
+                # Группа с подгруппами
+                inventory['all']['children'][g] = {
+                    'hosts': {},
+                    'children': {sg: {'hosts': {}} for sg in subgroups[g]}
+                }
+            else:
+                inventory['all']['children'][g] = {'hosts': {}}
+
         secrets = {}
 
         for h in hosts:
             ip = h['ip']
-            # Use hostname if available, else IP
             name = h.get('hostname') if h.get('hostname') else ip
-            
-            group = 'unknown'
-            os_type = h.get('os_type', '').lower()
-            if os_type == 'windows':
-                group = 'windows'
-            elif os_type == 'linux':
-                # Проверяем, не MikroTik ли это
-                vendor = h.get('vendor', '').lower()
-                if 'mikrotik' in vendor or 'routerboard' in vendor:
-                    group = 'mikrotik'
-                else:
-                    group = 'linux'
-            elif os_type == 'android':
-                group = 'unknown'  # Android устройства в unknown
+
+            group, subgroup = self._classify_host_group(h)
+
+            # Помещаем хост в подгруппу (если есть) или в основную группу
+            if subgroup and subgroup in inventory['all']['children'].get(group, {}).get('children', {}):
+                inventory['all']['children'][group]['children'][subgroup]['hosts'][name] = {'ansible_host': ip}
             else:
-                group = 'unknown'
-            
-            inventory['all']['children'][group]['hosts'][name] = {'ansible_host': ip}
-            
+                inventory['all']['children'][group]['hosts'][name] = {'ansible_host': ip}
+
             # Secrets
             if h.get('deep_scan_status') == 'completed' and h.get('user'):
-                # We don't have the password here easily unless we store it in storage (unsafe)
-                # or match it back from config.
-                # For security, let's just add the user.
-                # If user wants passwords in inventory, we'd need to change storage logic.
-                # Let's assume we just put user.
                 secrets[name] = {
                     'ansible_user': h['user']
                 }
@@ -145,9 +181,23 @@ class ReportGenerator:
                     secrets[name]['ansible_connection'] = 'winrm'
                     secrets[name]['ansible_winrm_server_cert_validation'] = 'ignore'
 
+        # Убираем пустые группы/подгруппы для чистоты вывода
+        for g in list(inventory['all']['children'].keys()):
+            group_data = inventory['all']['children'][g]
+            # Убираем пустые подгруппы
+            if 'children' in group_data:
+                for sg in list(group_data['children'].keys()):
+                    if not group_data['children'][sg]['hosts']:
+                        del group_data['children'][sg]
+                if not group_data['children']:
+                    del group_data['children']
+            # Убираем полностью пустую группу
+            if not group_data.get('hosts') and not group_data.get('children'):
+                del inventory['all']['children'][g]
+
         with open(os.path.join(self.output_dir, 'inventory.yaml'), 'w', encoding='utf-8') as f:
             yaml.dump(inventory, f, allow_unicode=True)
-            
+
         with open(os.path.join(self.output_dir, 'secrets.yaml'), 'w', encoding='utf-8') as f:
             yaml.dump(secrets, f, allow_unicode=True)
 

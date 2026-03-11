@@ -4,6 +4,8 @@ import subprocess
 import platform
 import re
 
+from src.connectors import snmp as snmp_connector
+
 logger = logging.getLogger(__name__)
 
 # Попытка импорта mac-vendor-lookup
@@ -121,6 +123,69 @@ class Fingerprinter:
 
         return None
 
+    # ===== Reverse DNS =====
+    def _reverse_dns(self, ip):
+        """Получить hostname через reverse DNS."""
+        try:
+            hostname = socket.gethostbyaddr(ip)[0]
+            short = hostname.split('.')[0]
+            return short
+        except socket.herror:
+            return ""
+        except Exception as e:
+            logger.debug(f"Reverse DNS failed for {ip}: {e}")
+            return ""
+
+    # ===== HTTP Title =====
+    def _get_http_title(self, ip, port=80, timeout=3):
+        """Получить <title> с HTTP-страницы."""
+        try:
+            import urllib.request
+            url = f"http://{ip}:{port}/"
+            req = urllib.request.Request(url, headers={'User-Agent': 'net-conf-gen/1.0'})
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                body = response.read(4096).decode('utf-8', errors='ignore')
+                match = re.search(r'<title>(.*?)</title>', body, re.IGNORECASE | re.DOTALL)
+                if match:
+                    return match.group(1).strip()
+        except Exception:
+            pass
+        return ""
+
+    # ===== Port-based Detection =====
+    def _detect_by_ports(self, open_ports):
+        """Определение типа устройства по характерным комбинациям портов."""
+        if not open_ports:
+            return None
+        ports = set(open_ports)
+
+        # MikroTik: API (8728/8729) — надёжный маркер
+        if ports & {8728, 8729}:
+            return {'os': 'MikroTik RouterOS', 'os_type': 'linux', 'type': 'mikrotik'}
+
+        # Winbox (8291) — может быть и у HP-принтеров
+        # Если 9100 (JetDirect) тоже открыт — скорее принтер, пропускаем  
+        if 8291 in ports and 9100 not in ports:
+            return {'os': 'MikroTik RouterOS', 'os_type': 'linux', 'type': 'mikrotik'}
+
+        # WinRM (5985) = 100% Windows
+        if 5985 in ports:
+            return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
+
+        return None
+
+    # ===== Windows Classification =====
+    def _classify_windows_type(self, hostname, open_ports):
+        """Уточнение типа Windows: server vs workstation."""
+        if hostname and hostname.lower().startswith('srv-'):
+            return 'server'
+
+        server_indicators = {88, 389, 636, 1540, 1541, 1560, 1561, 2049, 5985}
+        if server_indicators & set(open_ports or []):
+            return 'server'
+
+        return 'workstation'
+
     # ===== TTL Analysis =====
     def _ping_ttl(self, ip, timeout=2):
         """Получить TTL через ping."""
@@ -223,8 +288,12 @@ class Fingerprinter:
                     server_lower = server.lower()
 
                     if 'nginx' in server_lower or 'apache' in server_lower:
-                        result['os'] = f'Linux ({server})'
-                        result['os_type'] = 'linux'
+                        if 'win64' in server_lower or 'win32' in server_lower:
+                            result['os'] = f'Windows ({server})'
+                            result['os_type'] = 'windows'
+                        else:
+                            result['os'] = f'Linux ({server})'
+                            result['os_type'] = 'linux'
                         result['type'] = 'server'
                         return result
                     elif 'iis' in server_lower or 'microsoft' in server_lower:
@@ -255,7 +324,7 @@ class Fingerprinter:
         return result
 
     # ===== Main Fingerprinting Method =====
-    def lightweight_fingerprint(self, ip, vendor=None, mac=None):
+    def lightweight_fingerprint(self, ip, vendor=None, mac=None, open_ports=None):
         """
         Легковесный fingerprinting без nmap.
 
@@ -292,7 +361,17 @@ class Fingerprinter:
         if vendor:
             result['vendor'] = vendor
 
-        # 1. TTL Analysis (быстрый, надежный)
+        # 1. Port-based pre-detection (высокая достоверность)
+        if open_ports:
+            port_info = self._detect_by_ports(open_ports)
+            if port_info:
+                result.update(port_info)
+                result['confidence'] = 'high'
+                result['method'] = 'port'
+                logger.info(f"Fingerprint {ip} via ports: {port_info}")
+                return result
+
+        # 2. TTL Analysis (быстрый, надежный)
         ttl = self._ping_ttl(ip, timeout=2)
         if ttl:
             result['details']['ttl'] = ttl
@@ -304,10 +383,14 @@ class Fingerprinter:
                 result['type'] = ttl_info.get('type', 'unknown')
                 result['confidence'] = 'medium'
                 result['method'] = 'ttl'
+                # Уточняем тип Windows (server vs workstation)
+                if result['os_type'] == 'windows' and open_ports:
+                    result['type'] = self._classify_windows_type(
+                        result.get('hostname', ''), open_ports)
                 logger.debug(f"Fingerprint {ip} via TTL: {ttl_info}")
                 return result
 
-        # 2. Banner Grabbing (более точный)
+        # 3. Banner Grabbing (более точный)
         banner_info = self._analyze_banners(ip)
         if banner_info.get('os_type'):
             result['os'] = banner_info['os']
@@ -315,13 +398,20 @@ class Fingerprinter:
             result['type'] = banner_info.get('type', 'unknown')
             result['confidence'] = 'high'
             result['method'] = 'banner' if not ttl else 'ttl+banner'
+            # Уточняем тип Windows
+            if result['os_type'] == 'windows' and open_ports:
+                result['type'] = self._classify_windows_type(
+                    result.get('hostname', ''), open_ports)
             logger.info(f"Fingerprint {ip} via banner: {banner_info}")
             return result
 
-        # 3. Vendor-based Detection (fallback)
+        # 4. Vendor-based Detection (fallback)
         if vendor:
             device_type = self._detect_device_type_by_vendor(vendor)
             if device_type:
+                # TP-Link с DNS-портом → network (роутер), а не IoT
+                if device_type == 'iot' and open_ports and 53 in open_ports:
+                    device_type = 'network'
                 # Маппинг типов устройств на os_type
                 os_type_map = {
                     'mobile': 'android',
@@ -349,7 +439,7 @@ class Fingerprinter:
         return result
 
     # ===== Backward Compatibility =====
-    def fingerprint(self, ip, vendor=None):
+    def fingerprint(self, ip, vendor=None, open_ports=None):
         """
         Обратная совместимость со старым API.
         
@@ -357,7 +447,7 @@ class Fingerprinter:
             {'os': str, 'hostname': str, 'os_type': str, 'type': str}
         """
         # Вызываем новый метод
-        fp_result = self.lightweight_fingerprint(ip, vendor=vendor, mac=None)
+        fp_result = self.lightweight_fingerprint(ip, vendor=vendor, mac=None, open_ports=open_ports)
         
         # Возвращаем в формате
         return {
@@ -404,10 +494,12 @@ class Fingerprinter:
         logger.info(f"Fingerprinting хоста: {ip}")
         
         # Выполняем fingerprinting
+        open_ports = host_info.get('open_ports', [])
         fp_result = self.lightweight_fingerprint(
             ip,
             vendor=host_info.get('vendor'),
-            mac=host_info.get('mac')
+            mac=host_info.get('mac'),
+            open_ports=open_ports
         )
         
         # Обновляем информацию в storage
@@ -415,10 +507,91 @@ class Fingerprinter:
             'os': fp_result.get('os', 'Unknown'),
             'os_type': fp_result.get('os_type', 'linux'),
             'type': fp_result.get('type', 'unknown'),
-            'hostname': fp_result.get('hostname', ''),
             'fingerprint_method': fp_result.get('method', 'none'),
             'fingerprint_confidence': fp_result.get('confidence', 'low')
         }
+        
+        # Hostname: reverse DNS если не определён ранее
+        current_hostname = host_info.get('hostname', '')
+        fp_hostname = fp_result.get('hostname', '')
+        if not current_hostname and not fp_hostname:
+            dns_hostname = self._reverse_dns(ip)
+            if dns_hostname:
+                update_data['hostname'] = dns_hostname
+                logger.info(f"  Hostname via reverse DNS: {dns_hostname}")
+        elif fp_hostname:
+            update_data['hostname'] = fp_hostname
+        
+        # HTTP-title для хостов с портом 80
+        if 80 in open_ports:
+            http_title = self._get_http_title(ip, port=80)
+            if http_title:
+                update_data['http_title'] = http_title
+                logger.info(f"  HTTP title: {http_title}")
+        
+        # Определение принтеров по hostname и http_title
+        final_hostname = update_data.get('hostname') or current_hostname or ''
+        http_title = update_data.get('http_title', '')
+        hostname_lower = final_hostname.lower()
+        title_lower = http_title.lower()
+        
+        printer_hostname = hostname_lower.startswith('npi') or hostname_lower.startswith('km')
+        printer_title = any(kw in title_lower for kw in ['laserjet', 'canon', 'epson', 'brother', 'xerox', 'ricoh', 'konica', 'lbp'])
+        
+        if printer_hostname or printer_title:
+            update_data['type'] = 'printer'
+            update_data['os'] = 'Printer'
+            update_data['os_type'] = 'linux'
+            logger.info(f"  Classified as printer (hostname={final_hostname}, title={http_title[:40]})")
+        
+        # Определение IP-камер по http_title и портам
+        camera_title = any(kw in title_lower for kw in [
+            'netsurveillance', 'web viewer', 'hikvision', 'dahua',
+            'ipcamera', 'ip camera', 'dvr', 'nvr', 'xmeye',
+            'surveillance', 'onvif'
+        ])
+        camera_ports = bool({554, 8899, 34567} & set(open_ports))
+        
+        if (camera_title or camera_ports) and update_data.get('type') != 'printer':
+            update_data['type'] = 'camera'
+            update_data['os'] = 'IP Camera'
+            update_data['os_type'] = 'linux'
+            logger.info(f"  Classified as camera (title={http_title[:40]}, camera_ports={camera_ports})")
+        
+        # Vendor-based type refinement (для случаев когда TTL ставит generic type)
+        vendor = host_info.get('vendor', '')
+        if vendor and update_data.get('type') not in ('printer', 'mikrotik', 'camera'):
+            vendor_lower = vendor.lower()
+            # TP-Link с DNS-портом → сетевое оборудование (роутер)
+            if 'tp-link' in vendor_lower and 53 in open_ports:
+                update_data['type'] = 'network'
+                update_data['os'] = 'Network Equipment'
+                logger.info(f"  Classified as network (vendor={vendor}, DNS port open)")
+        
+        # SNMP-опрос для хостов с портом 161 или type='network'
+        if 161 in open_ports or update_data.get('type') in ('network', 'mikrotik'):
+            snmp_info = snmp_connector.snmp_get_info(ip)
+            if snmp_info:
+                update_data['snmp_info'] = snmp_info
+                # sysName → hostname (если не определён)
+                sys_name = snmp_info.get('sysName', '')
+                if sys_name and not update_data.get('hostname') and not current_hostname:
+                    update_data['hostname'] = sys_name.split('.')[0]
+                    logger.info(f"  Hostname via SNMP: {update_data['hostname']}")
+                # sysLocation → location
+                sys_location = snmp_info.get('sysLocation', '')
+                if sys_location:
+                    update_data['location'] = sys_location
+                # Уточнение os/type по sysDescr
+                snmp_os = snmp_connector.parse_snmp_os(snmp_info)
+                if snmp_os and update_data.get('os', 'Unknown') in ('Unknown', 'Network Device', 'Network Equipment'):
+                    update_data.update(snmp_os)
+                    logger.info(f"  OS via SNMP: {snmp_os.get('os')}")
+        
+        # Уточняем Windows type если hostname стал известен
+        if update_data.get('os_type') == 'windows':
+            hostname = update_data.get('hostname') or current_hostname or ''
+            update_data['type'] = self._classify_windows_type(hostname, open_ports)
         
         # Добавляем vendor если был определен
         if 'vendor' in fp_result:
@@ -426,9 +599,9 @@ class Fingerprinter:
         
         self.storage.update_host(ip, update_data)
         
-        logger.info(f"  OS: {fp_result.get('os')}, OS Type: {fp_result.get('os_type')}, "
-                   f"Type: {fp_result.get('type')}, Method: {fp_result.get('method')}, "
-                   f"Confidence: {fp_result.get('confidence')}")
+        logger.info(f"  OS: {update_data.get('os')}, Type: {update_data.get('type')}, "
+                   f"Method: {update_data.get('fingerprint_method')}, "
+                   f"Confidence: {update_data.get('fingerprint_confidence')}")
     
     def _fingerprint_all_hosts(self, force=False):
         """Fingerprint для всех хостов с deep_scan_status != 'completed'."""

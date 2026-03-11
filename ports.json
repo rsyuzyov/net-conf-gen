@@ -13,6 +13,8 @@
   "389": "LDAP",
   "443": "HTTPS",
   "445": "SMB",
+  "514": "Syslog",
+  "554": "RTSP",
   "587": "SMTP-Submission",
   "636": "LDAPS",
   "902": "VMware",
@@ -41,8 +43,13 @@
   "8291": "MikroTik-Winbox",
   "8443": "HTTPS-Alt",
   "8728": "MikroTik-API",
+  "8729": "MikroTik-API-SSL",
+  "8899": "ONVIF",
   "9090": "Prometheus",
   "9100": "Printer",
   "10000": "Webmin",
-  "27017": "MongoDB"
+  "10050": "Zabbix-Agent",
+  "10051": "Zabbix-Server",
+  "27017": "MongoDB",
+  "34567": "XMEye"
 }
