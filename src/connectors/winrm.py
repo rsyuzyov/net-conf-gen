@@ -49,8 +49,8 @@ class WinRMConnector(BaseConnector):
             
             winkerberos.authGSSClientStep = patched_step
             cls._winkerberos_encoding_patched = True
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"winkerberos encoding patch skipped: {e}")
 
     @classmethod
     def _ensure_gssapi_auth(cls):

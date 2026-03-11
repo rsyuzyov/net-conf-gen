@@ -154,8 +154,8 @@ class NetworkScanner:
                 writer.close()
                 try:
                     await writer.wait_closed()
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"writer.wait_closed() failed for {ip}:{port}: {e}")
                 return True
             except (asyncio.TimeoutError, OSError, ConnectionRefusedError):
                 return False
@@ -280,8 +280,8 @@ if __name__ == "__main__":
     scanner = NetworkScanner(ports_arg=args.ports)
     hosts = scanner.scan_all(args.subnet)
     
-    print(f"\nScan Results ({len(hosts)}):")
+    logger.info(f"\nScan Results ({len(hosts)}):")
     for h in hosts:
         ports = ','.join(map(str, h.get('open_ports', []))) or 'none'
         services = ', '.join(h.get('services', [])) or 'none'
-        print(f"IP: {h['ip']:<15} MAC: {h['mac']:<20} Services: {services}")
+        logger.info(f"IP: {h['ip']:<15} MAC: {h['mac']:<20} Services: {services}")

@@ -2,7 +2,7 @@
 *.log
 *.pem
 *.key
-config.yaml
+config.yaml*
 notes.txt
 review.md
 
@@ -27,3 +27,4 @@ env/
 
 # Project specific
 output/
+log/

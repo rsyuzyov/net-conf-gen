@@ -10,10 +10,13 @@
 ## Установка
 
 Установка зависимостей на linux:
+
 ```bash
 chmod +x ./install.sh && ./install.sh
 ```
+
 Установка python (если не установлен) и зависимостей на windows:
+
 ```batch
 ./install.bat
 ```
@@ -23,11 +26,14 @@ chmod +x ./install.sh && ./install.sh
 ```bash
 python main.py
 ```
-При первом запуске скрипт предложит сгенерировать конфиг (./config.yaml) - отвечаем на вопросы. Для прекращения ввод списка просто нажимаем Enter.  
-Можно заранее создать руками копированием из [config.yaml.example](./config.yaml.example)  
-Далее создаст ./output/scan_state.json - главный файл, дополняемый на каждом этапе работы  
+
+При первом запуске скрипт предложит сгенерировать конфиг (./config.yaml) - отвечаем на вопросы.  
+Для прекращения ввод списка просто нажимаем Enter.  
+Если где-то ошиблись - потом можно отредактировать конечный конфиг вручную.  
+Можно заранее создать руками копированием из [config.example.yaml](./config.example.yaml)  
+Далее утилита создаст ./output/scan_state.json - главный файл, дополняемый на каждом этапе работы  
 После окончания работы берем данные в подходящем формате в ./output  
-Пример отчета в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report.html)  
+Пример отчета в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report.html)
 
 Варианты запуска:
 

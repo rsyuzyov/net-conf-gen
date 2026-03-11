@@ -40,7 +40,8 @@ class ReportGenerator:
         try:
             parts = ip.split('.')
             return int(parts[0]) * 16777216 + int(parts[1]) * 65536 + int(parts[2]) * 256 + int(parts[3])
-        except:
+        except Exception as e:
+            logger.warning(f"Некорректный IP при сортировке: {ip}, {e}")
             return 0
 
     def _sort_hosts_by_ip(self, hosts):
@@ -218,7 +219,8 @@ class ReportGenerator:
             try:
                 dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
                 return dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
+            except Exception as e:
+                logger.warning(f"Некорректный формат datetime: {dt_str}, {e}")
                 return str(dt_str)
         
         # Build table rows

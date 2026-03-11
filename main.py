@@ -2,12 +2,26 @@ import argparse
 import yaml
 import os
 import sys
+import glob
 import logging
+import time
+from datetime import datetime
 from src.config_wizard import create_config
 from src.discovery import NetworkScanner
 
 # Logger will be configured in main()
 logger = logging.getLogger(__name__)
+
+def cleanup_old_logs(log_dir, max_age_days=30):
+    """Удаляет лог-файлы старше max_age_days дней."""
+    now = time.time()
+    for log_file in glob.glob(os.path.join(log_dir, '*.log')):
+        try:
+            file_age = now - os.path.getmtime(log_file)
+            if file_age > max_age_days * 86400:
+                os.remove(log_file)
+        except OSError:
+            pass
 
 def load_config(config_path):
     if not os.path.exists(config_path):
@@ -31,12 +45,19 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
 
+    # Setup log directory and file
+    log_dir = 'log'
+    os.makedirs(log_dir, exist_ok=True)
+    cleanup_old_logs(log_dir, max_age_days=30)
+    log_filename = os.path.join(log_dir, f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
+
     # Setup Logging based on --debug flag
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.StreamHandler(sys.stdout)
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_filename, encoding='utf-8'),
         ]
     )
     

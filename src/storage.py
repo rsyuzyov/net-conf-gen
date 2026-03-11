@@ -31,7 +31,8 @@ class Storage:
                 try:
                     parts = ip.split('.')
                     return int(parts[0]) * 16777216 + int(parts[1]) * 65536 + int(parts[2]) * 256 + int(parts[3])
-                except:
+                except Exception as e:
+                    logger.warning(f"Некорректный IP при сортировке: {ip}, {e}")
                     return 0
             
             sorted_data = dict(sorted(self.data.items(), key=lambda x: ip_to_int(x[0])))
