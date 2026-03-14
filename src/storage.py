@@ -52,7 +52,7 @@ class Storage:
             self.data[ip] = {}
         
         # Поля, которые не должны перезаписываться пустыми значениями
-        protected_fields = ['vendor', 'hostname', 'os', 'os_type', 'type']
+        protected_fields = ['vendor', 'hostname', 'os', 'os_type', 'type', 'model']
         
         # Фильтруем info: не перезаписываем защищенные поля, если новое значение пустое
         filtered_info = {}

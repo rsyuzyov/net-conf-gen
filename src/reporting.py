@@ -72,13 +72,12 @@ class ReportGenerator:
                 f.write(f"{h['ip']}\n")
 
     def _generate_csv(self, hosts):
-        keys = ['ip', 'mac', 'vendor', 'hostname', 'os', 'os_type', 'type', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'last_updated']
+        keys = ['ip', 'mac', 'vendor', 'model', 'hostname', 'os', 'os_type', 'type', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'last_updated']
         with open(os.path.join(self.output_dir, 'scan_report.csv'), 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
             writer.writeheader()
             for host in hosts:
                 row = {k: host.get(k, '') for k in keys}
-                row['vendor'] = self._get_vendor(host)
                 # Форматируем порты как строку
                 if 'open_ports' in row and isinstance(row['open_ports'], list):
                     row['open_ports'] = self._format_ports(row['open_ports'])
@@ -290,7 +289,8 @@ class ReportGenerator:
             row = f"""                <tr class="{row_class}">
                     <td>{escape_value(host.get('ip'))}</td>
                     <td>{escape_value(host.get('mac'))}</td>
-                    <td>{escape_value(self._get_vendor(host))}</td>
+                    <td>{escape_value(host.get('vendor'))}</td>
+                    <td>{escape_value(host.get('model'))}</td>
                     <td>{escape_value(host.get('hostname'))}</td>
                     <td>{escape_value(host.get('os'))}</td>
                     <td>{escape_value(host.get('os_type'))}</td>

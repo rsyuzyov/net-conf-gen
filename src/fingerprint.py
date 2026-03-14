@@ -124,6 +124,155 @@ class Fingerprinter:
 
         return None
 
+    # ===== Vendor / Model =====
+    # Маппинг MAC-vendor → нормализованный vendor
+    _MAC_VENDOR_MAP = {
+        'hewlett packard': 'HP',
+        'hp inc': 'HP',
+        'routerboard': 'MikroTik',
+        'mikrotik': 'MikroTik',
+        'tp-link': 'TP-Link',
+        'cisco': 'Cisco',
+        'ubiquiti': 'Ubiquiti',
+        'd-link': 'D-Link',
+        'netgear': 'Netgear',
+        'juniper': 'Juniper',
+        'aruba': 'Aruba',
+        'apple': 'Apple',
+        'samsung': 'Samsung',
+        'xiaomi': 'Xiaomi',
+        'huawei': 'Huawei',
+        'canon': 'Canon',
+        'epson': 'Epson',
+        'brother': 'Brother',
+        'xerox': 'Xerox',
+        'ricoh': 'Ricoh',
+        'konica minolta': 'Konica Minolta',
+        'intel': 'Intel',
+        'dell': 'Dell',
+        'lenovo': 'Lenovo',
+        'asus': 'ASUS',
+        'espressif': 'Espressif',
+        'tuya': 'Tuya',
+        'hikvision': 'Hikvision',
+        'dahua': 'Dahua',
+    }
+
+    def _determine_vendor_model(self, update_data, host_info):
+        """
+        Определяет vendor (бренд) и model (продукт/модель) по всем источникам.
+
+        Приоритет:
+          1. SSL cert issuer
+          2. SNMP sysDescr
+          3. HTTP title
+          4. OS / port-based detection
+          5. MAC vendor (fallback)
+
+        Записывает 'vendor' и 'model' в update_data.
+        """
+        vendor = ''
+        model = ''
+        mac_vendor = host_info.get('vendor', '')  # сырой MAC-vendor
+
+        os_name = update_data.get('os', '')
+        http_title = update_data.get('http_title', '')
+        ssl_cert = update_data.get('ssl_cert', {})
+        snmp_info = update_data.get('snmp_info', {})
+        host_type = update_data.get('type', '')
+
+        # --- 1. SSL cert issuer ---
+        ssl_issuer = ''
+        if isinstance(ssl_cert, dict):
+            ssl_issuer = ssl_cert.get('issuer_cn', '').lower()
+        if 'kerio' in ssl_issuer:
+            vendor = vendor or 'Kerio'
+            model = model or 'Kerio Control'
+        elif 'proxmox' in ssl_issuer:
+            vendor = vendor or 'Proxmox'
+            model = model or 'Proxmox VE'
+
+        # --- 2. SNMP sysDescr ---
+        sys_descr = ''
+        if isinstance(snmp_info, dict):
+            sys_descr = snmp_info.get('sysDescr', '')
+        if sys_descr:
+            sd_lower = sys_descr.lower()
+            if 'routeros' in sd_lower or 'mikrotik' in sd_lower:
+                vendor = vendor or 'MikroTik'
+                model = model or sys_descr.strip()[:80]
+            elif 'cisco' in sd_lower:
+                vendor = vendor or 'Cisco'
+                model = model or sys_descr.strip()[:80]
+            elif 'linux' in sd_lower:
+                model = model or sys_descr.strip()[:80]
+            elif 'windows' in sd_lower:
+                vendor = vendor or 'Microsoft'
+                model = model or sys_descr.strip()[:80]
+
+        # --- 3. HTTP title ---
+        if http_title:
+            title_lower = http_title.lower()
+            title_vendor_map = {
+                'laserjet': ('HP', http_title),
+                'hp ': ('HP', http_title),
+                'canon': ('Canon', http_title),
+                'epson': ('Epson', http_title),
+                'brother': ('Brother', http_title),
+                'xerox': ('Xerox', http_title),
+                'ricoh': ('Ricoh', http_title),
+                'konica': ('Konica Minolta', http_title),
+                'pi-hole': ('Pi-hole', 'Pi-hole'),
+                'proxmox': ('Proxmox', http_title),
+                'synology': ('Synology', http_title),
+                'qnap': ('QNAP', http_title),
+                'mikrotik': ('MikroTik', http_title),
+                'hikvision': ('Hikvision', http_title),
+                'dahua': ('Dahua', http_title),
+                'ubiquiti': ('Ubiquiti', http_title),
+                'unifi': ('Ubiquiti', http_title),
+                'kerio': ('Kerio', http_title),
+            }
+            for kw, (v, m) in title_vendor_map.items():
+                if kw in title_lower:
+                    vendor = vendor or v
+                    model = model or m
+                    break
+
+        # --- 4. OS / port-based ---
+        if os_name:
+            os_lower = os_name.lower()
+            if 'mikrotik' in os_lower:
+                vendor = vendor or 'MikroTik'
+                model = model or 'RouterOS'
+            elif 'kerio' in os_lower:
+                vendor = vendor or 'Kerio'
+                model = model or 'Kerio Control'
+            elif 'proxmox' in os_lower:
+                vendor = vendor or 'Proxmox'
+                model = model or 'Proxmox VE'
+            elif 'windows' in os_lower:
+                vendor = vendor or 'Microsoft'
+            elif host_type == 'printer' and 'printer' in os_lower:
+                pass  # vendor уже определён из title/mac
+
+        # --- 5. MAC vendor (fallback + нормализация) ---
+        if mac_vendor:
+            mac_lower = mac_vendor.lower()
+            for pattern, normalized in self._MAC_VENDOR_MAP.items():
+                if pattern in mac_lower:
+                    vendor = vendor or normalized
+                    break
+            if not vendor:
+                # Используем MAC vendor как есть, если не нашли в маппинге
+                vendor = mac_vendor
+
+        # Записываем
+        if vendor:
+            update_data['vendor'] = vendor
+        if model:
+            update_data['model'] = model
+
     # ===== Reverse DNS =====
     def _reverse_dns(self, ip):
         """Получить hostname через reverse DNS."""
@@ -681,9 +830,8 @@ class Fingerprinter:
             hostname = update_data.get('hostname') or current_hostname or ''
             update_data['type'] = self._classify_windows_type(hostname, open_ports)
         
-        # Добавляем vendor если был определен
-        if 'vendor' in fp_result:
-            update_data['vendor'] = fp_result['vendor']
+        # Определяем vendor (бренд) и model (продукт/модель)
+        self._determine_vendor_model(update_data, host_info)
         
         self.storage.update_host(ip, update_data)
         
