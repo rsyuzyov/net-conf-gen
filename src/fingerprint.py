@@ -6,6 +6,7 @@ import platform
 import re
 
 from src.connectors import snmp as snmp_connector
+from src.connectors import http as http_connector
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ class Fingerprinter:
             storage: Storage объект (опционально, для работы в режиме шага)
         """
         self.storage = storage
+        
+        # Загрузка базы дефолтных учётных данных
+        self._default_creds_db = http_connector.load_default_credentials()
         
         # Инициализация MAC lookup
         if HAS_MAC_LOOKUP:
@@ -291,9 +295,16 @@ class Fingerprinter:
         """Получить <title> с HTTP-страницы."""
         try:
             import urllib.request
-            url = f"http://{ip}:{port}/"
+            import urllib.error
+            scheme = 'https' if port in (443, 4081, 5001, 8006, 8443, 10000) else 'http'
+            url = f"{scheme}://{ip}:{port}/"
             req = urllib.request.Request(url, headers={'User-Agent': 'net-conf-gen/1.0'})
-            with urllib.request.urlopen(req, timeout=timeout) as response:
+            ctx = None
+            if scheme == 'https':
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
                 body = response.read(4096).decode('utf-8', errors='ignore')
                 match = re.search(r'<title>(.*?)</title>', body, re.IGNORECASE | re.DOTALL)
                 if match:
@@ -383,6 +394,198 @@ class Fingerprinter:
             return {'os': 'Kerio Control', 'os_type': 'linux', 'type': 'network'}
 
         return None
+
+    # ===== Deep Port Analysis =====
+    # Порты, на которых стоит собирать HTTP title
+    HTTP_PORTS = {80, 443, 3000, 4040, 4081, 5000, 5001, 8006, 8080, 8443, 10000}
+    # Порты, на которых стоит собирать SSL cert
+    SSL_PORTS = {443, 4081, 5001, 8006, 8443, 10000}
+    # Порты для расширенного banner grabbing (в дополнение к стандартным)
+    EXTRA_BANNER_PORTS = {23, 554, 1433, 1521, 3306, 5432, 5900, 8291}
+
+    def _deep_port_analysis(self, ip, open_ports, update_data):
+        """
+        Расширенный анализ всех найденных портов для неполностью определённых хостов.
+        Собирает HTTP title, SSL cert и баннеры с нестандартных портов.
+        """
+        ports = set(open_ports)
+
+        # HTTP title со всех HTTP-подобных портов
+        http_titles = {}
+        for port in sorted(ports & self.HTTP_PORTS):
+            title = self._get_http_title(ip, port=port, timeout=3)
+            if title:
+                http_titles[port] = title
+                logger.info(f"  HTTP title {ip}:{port} = {title[:60]}")
+        
+        if http_titles:
+            update_data['http_titles'] = http_titles
+            # Основной http_title — с первого найденного порта (80 приоритет)
+            if not update_data.get('http_title'):
+                primary_port = 80 if 80 in http_titles else min(http_titles.keys())
+                update_data['http_title'] = http_titles[primary_port]
+
+        # SSL cert со всех HTTPS-подобных портов
+        ssl_certs = {}
+        for port in sorted(ports & self.SSL_PORTS):
+            cert = self._get_ssl_cert_info(ip, port=port)
+            if cert:
+                ssl_certs[port] = cert
+                logger.info(f"  SSL cert {ip}:{port} = CN={cert.get('cn')}, Issuer={cert.get('issuer_cn')}")
+        
+        if ssl_certs:
+            update_data['ssl_certs'] = ssl_certs
+            # Основной ssl_cert — с 443 или первого найденного
+            if not update_data.get('ssl_cert'):
+                primary_port = 443 if 443 in ssl_certs else min(ssl_certs.keys())
+                update_data['ssl_cert'] = ssl_certs[primary_port]
+
+        # Расширенный banner grabbing
+        extra_banners = {}
+        for port in sorted(ports & self.EXTRA_BANNER_PORTS):
+            banner = self._grab_banner(ip, port, timeout=1)
+            if banner:
+                extra_banners[port] = banner[:200]
+                logger.info(f"  Banner {ip}:{port} = {banner[:60]}")
+
+        if extra_banners:
+            update_data['extra_banners'] = extra_banners
+
+        # Дополнительная классификация на основе собранных данных
+        self._classify_from_deep_analysis(update_data, http_titles, ssl_certs, extra_banners)
+
+    def _classify_from_deep_analysis(self, update_data, http_titles, ssl_certs, extra_banners):
+        """
+        Дополнительная классификация хоста на основе данных глубокого анализа портов.
+        Используется когда стандартные методы не дали высокой уверенности.
+        """
+        current_type = update_data.get('type', 'unknown')
+        current_os = update_data.get('os', 'Unknown')
+        
+        # Если тип уже определён с высокой уверенностью, не трогаем
+        if current_type not in ('unknown', 'server', 'workstation') and \
+           update_data.get('fingerprint_confidence') == 'high':
+            return
+        
+        # Анализируем HTTP title со всех портов
+        all_titles = ' '.join(http_titles.values()).lower() if http_titles else ''
+        
+        # Grafana
+        if 'grafana' in all_titles:
+            if current_type == 'unknown':
+                update_data['type'] = 'server'
+            update_data.setdefault('model', 'Grafana')
+            logger.info(f"  Classified via deep analysis: Grafana")
+        
+        # Proxmox
+        if 'proxmox' in all_titles:
+            update_data['type'] = 'server'
+            if 'proxmox' not in current_os.lower():
+                update_data['os'] = 'Proxmox VE'
+            update_data.setdefault('vendor', 'Proxmox')
+            logger.info(f"  Classified via deep analysis: Proxmox VE")
+        
+        # Kibana
+        if 'kibana' in all_titles:
+            if current_type == 'unknown':
+                update_data['type'] = 'server'
+            update_data.setdefault('model', 'Kibana')
+            logger.info(f"  Classified via deep analysis: Kibana")
+        
+        # Synology / QNAP NAS
+        if 'synology' in all_titles:
+            update_data['type'] = 'server'
+            update_data.setdefault('vendor', 'Synology')
+            update_data.setdefault('model', 'DiskStation')
+            logger.info(f"  Classified via deep analysis: Synology NAS")
+        
+        if 'qnap' in all_titles:
+            update_data['type'] = 'server'
+            update_data.setdefault('vendor', 'QNAP')
+            logger.info(f"  Classified via deep analysis: QNAP NAS")
+        
+        # UniFi
+        if 'unifi' in all_titles or 'ubiquiti' in all_titles:
+            update_data.setdefault('vendor', 'Ubiquiti')
+            if current_type == 'unknown':
+                update_data['type'] = 'network'
+            logger.info(f"  Classified via deep analysis: Ubiquiti/UniFi")
+        
+        # Webmin
+        if 'webmin' in all_titles:
+            if current_type == 'unknown':
+                update_data['type'] = 'server'
+            update_data.setdefault('model', 'Webmin')
+            logger.info(f"  Classified via deep analysis: Webmin")
+        
+        # Zabbix
+        if 'zabbix' in all_titles:
+            if current_type == 'unknown':
+                update_data['type'] = 'server'
+            update_data.setdefault('model', 'Zabbix')
+            logger.info(f"  Classified via deep analysis: Zabbix")
+        
+        # NanoKVM
+        if 'nanokvm' in all_titles:
+            update_data['type'] = 'server'
+            update_data['os'] = 'Linux/Unix'
+            update_data.setdefault('vendor', 'Sipeed')
+            update_data['model'] = 'NanoKVM'
+            logger.info(f"  Classified via deep analysis: NanoKVM")
+        
+        # Камеры по HTTP title → vendor/model
+        if 'netsurveillance' in all_titles:
+            update_data['type'] = 'camera'
+            update_data['os'] = 'IP Camera'
+            update_data.setdefault('vendor', 'XMEye')
+            update_data.setdefault('model', 'NETSurveillance DVR/NVR')
+            logger.info(f"  Classified via deep analysis: XMEye NETSurveillance")
+        
+        if 'webpackspa' in all_titles:
+            update_data['type'] = 'camera'
+            update_data['os'] = 'IP Camera'
+            update_data.setdefault('vendor', 'Hikvision')
+            update_data.setdefault('model', 'IP Camera')
+            logger.info(f"  Classified via deep analysis: Hikvision (webpackSPA)")
+        
+        if 'web viewer' in all_titles:
+            update_data['type'] = 'camera'
+            update_data['os'] = 'IP Camera'
+            update_data.setdefault('vendor', 'Samsung/Hanwha')
+            update_data.setdefault('model', 'IP Camera')
+            logger.info(f"  Classified via deep analysis: Samsung/Hanwha (Web Viewer)")
+        
+        # Анализируем SSL certs
+        for port, cert in ssl_certs.items():
+            issuer = cert.get('issuer_cn', '').lower()
+            cn = cert.get('cn', '').lower()
+            
+            if 'kerio' in issuer or 'kerio' in cn:
+                update_data['type'] = 'network'
+                update_data['os'] = 'Kerio Control'
+                update_data.setdefault('vendor', 'Kerio')
+                logger.info(f"  Classified via deep SSL analysis ({port}): Kerio Control")
+            elif 'proxmox' in issuer or 'proxmox' in cn:
+                update_data['type'] = 'server'
+                update_data['os'] = 'Proxmox VE'
+                update_data.setdefault('vendor', 'Proxmox')
+                logger.info(f"  Classified via deep SSL analysis ({port}): Proxmox VE")
+        
+        # Анализируем extra banners
+        for port, banner in extra_banners.items():
+            banner_lower = banner.lower()
+            
+            # Telnet (23) — часто роутеры или управляемые свитчи
+            if port == 23 and current_type == 'unknown':
+                update_data['type'] = 'network'
+                logger.info(f"  Telnet banner detected, classified as network")
+            
+            # RTSP (554) — камеры
+            if port == 554 and ('rtsp' in banner_lower or 'server' in banner_lower):
+                if current_type not in ('camera', 'printer'):
+                    update_data['type'] = 'camera'
+                    update_data['os'] = 'IP Camera'
+                    logger.info(f"  RTSP banner detected, classified as camera")
 
     # ===== Windows Classification =====
     def _classify_windows_type(self, hostname, open_ports):
@@ -732,39 +935,33 @@ class Fingerprinter:
         elif fp_hostname:
             update_data['hostname'] = fp_hostname
         
-        # HTTP-title для хостов с портом 80
-        if 80 in open_ports:
-            http_title = self._get_http_title(ip, port=80)
-            if http_title:
-                update_data['http_title'] = http_title
-                logger.info(f"  HTTP title: {http_title}")
+        # Расширенный анализ портов: HTTP title, SSL cert, баннеры
+        # с ВСЕХ HTTP/HTTPS-подобных портов (не только 80/443)
+        self._deep_port_analysis(ip, open_ports, update_data)
 
-        # SSL-сертификат для хостов с портом 443
-        if 443 in open_ports:
-            cert_info = self._get_ssl_cert_info(ip, port=443)
-            if cert_info:
-                update_data['ssl_cert'] = cert_info
-                ssl_cn = cert_info.get('cn', '')
-                ssl_issuer = cert_info.get('issuer_cn', '')
-                logger.info(f"  SSL cert: CN={ssl_cn}, Issuer={ssl_issuer}")
+        # SSL cert → hostname и уточнение ОС
+        ssl_cert = update_data.get('ssl_cert', {})
+        if ssl_cert:
+            ssl_cn = ssl_cert.get('cn', '')
+            ssl_issuer = ssl_cert.get('issuer_cn', '')
 
-                # CN → hostname (если ещё не определён и CN похож на hostname)
-                if ssl_cn and not update_data.get('hostname') and not current_hostname:
-                    # Фильтруем IP-адреса и wildcard-сертификаты
-                    if not ssl_cn.startswith('*') and not re.match(r'^\d+\.\d+\.\d+\.\d+$', ssl_cn):
-                        update_data['hostname'] = ssl_cn.split('.')[0]
-                        logger.info(f"  Hostname via SSL CN: {update_data['hostname']}")
+            # CN → hostname (если ещё не определён и CN похож на hostname)
+            if ssl_cn and not update_data.get('hostname') and not current_hostname:
+                # Фильтруем IP-адреса и wildcard-сертификаты
+                if not ssl_cn.startswith('*') and not re.match(r'^\d+\.\d+\.\d+\.\d+$', ssl_cn):
+                    update_data['hostname'] = ssl_cn.split('.')[0]
+                    logger.info(f"  Hostname via SSL CN: {update_data['hostname']}")
 
-                # Issuer → уточнение ОС
-                issuer_lower = ssl_issuer.lower()
-                if 'kerio' in issuer_lower and update_data.get('os', 'Unknown') in ('Unknown', 'Linux/Unix'):
-                    update_data['os'] = 'Kerio Control'
-                    update_data['type'] = 'network'
-                    logger.info(f"  OS via SSL issuer: Kerio Control")
-                elif 'proxmox' in issuer_lower and update_data.get('os', 'Unknown') in ('Unknown', 'Linux/Unix'):
-                    update_data['os'] = 'Proxmox VE'
-                    update_data['type'] = 'server'
-                    logger.info(f"  OS via SSL issuer: Proxmox VE")
+            # Issuer → уточнение ОС
+            issuer_lower = ssl_issuer.lower()
+            if 'kerio' in issuer_lower and update_data.get('os', 'Unknown') in ('Unknown', 'Linux/Unix'):
+                update_data['os'] = 'Kerio Control'
+                update_data['type'] = 'network'
+                logger.info(f"  OS via SSL issuer: Kerio Control")
+            elif 'proxmox' in issuer_lower and update_data.get('os', 'Unknown') in ('Unknown', 'Linux/Unix'):
+                update_data['os'] = 'Proxmox VE'
+                update_data['type'] = 'server'
+                logger.info(f"  OS via SSL issuer: Proxmox VE")
 
         # Определение принтеров по hostname и http_title
         final_hostname = update_data.get('hostname') or current_hostname or ''
@@ -782,17 +979,41 @@ class Fingerprinter:
             logger.info(f"  Classified as printer (hostname={final_hostname}, title={http_title[:40]})")
         
         # Определение IP-камер по http_title и портам
-        camera_title = any(kw in title_lower for kw in [
-            'netsurveillance', 'web viewer', 'hikvision', 'dahua',
-            'ipcamera', 'ip camera', 'dvr', 'nvr', 'xmeye',
-            'surveillance', 'onvif'
-        ])
+        camera_title_keywords = {
+            'netsurveillance': ('XMEye', 'NETSurveillance DVR/NVR'),
+            'webpackspa': ('Hikvision', 'IP Camera'),
+            'web viewer': ('Samsung/Hanwha', 'IP Camera'),
+            'hikvision': ('Hikvision', 'IP Camera'),
+            'dahua': ('Dahua', 'IP Camera'),
+            'ipcamera': (None, 'IP Camera'),
+            'ip camera': (None, 'IP Camera'),
+            'dvr': (None, 'DVR'),
+            'nvr': (None, 'NVR'),
+            'xmeye': ('XMEye', 'DVR/NVR'),
+            'surveillance': (None, None),
+            'onvif': (None, None),
+        }
+        camera_title = False
+        camera_vendor_from_title = None
+        camera_model_from_title = None
+        for kw, (v, m) in camera_title_keywords.items():
+            if kw in title_lower:
+                camera_title = True
+                if v and not camera_vendor_from_title:
+                    camera_vendor_from_title = v
+                if m and not camera_model_from_title:
+                    camera_model_from_title = m
+        
         camera_ports = bool({554, 8899, 34567} & set(open_ports))
         
         if (camera_title or camera_ports) and update_data.get('type') != 'printer':
             update_data['type'] = 'camera'
             update_data['os'] = 'IP Camera'
             update_data['os_type'] = 'linux'
+            if camera_vendor_from_title:
+                update_data.setdefault('vendor', camera_vendor_from_title)
+            if camera_model_from_title:
+                update_data.setdefault('model', camera_model_from_title)
             logger.info(f"  Classified as camera (title={http_title[:40]}, camera_ports={camera_ports})")
         
         # Vendor-based type refinement (для случаев когда TTL ставит generic type)
@@ -832,6 +1053,41 @@ class Fingerprinter:
         
         # Определяем vendor (бренд) и model (продукт/модель)
         self._determine_vendor_model(update_data, host_info)
+        
+        # Проверка дефолтных учётных данных через HTTP
+        http_ports = {80, 443, 3000, 4040, 4081, 5000, 5001, 8006, 8080, 8443, 10000}
+        if http_ports & set(open_ports):
+            # Собираем актуальную информацию для маппинга
+            merged_info = dict(host_info)
+            merged_info.update(update_data)
+            
+            web_auth = http_connector.check_default_credentials(
+                ip, merged_info, self._default_creds_db
+            )
+            if web_auth:
+                update_data['web_auth_check'] = web_auth
+                if web_auth.get('default_creds_found'):
+                    user = web_auth.get('user', '')
+                    pwd = web_auth.get('password', '')
+                    port = web_auth.get('port', 80)
+                    auth_type = web_auth.get('auth_type', 'http')
+                    # Формируем поле account: протокол://user:password@ip:port
+                    proto = 'https' if port in (443, 4081, 5001, 8006, 8443, 10000) else 'http'
+                    pwd_display = pwd if pwd else '(пустой)'
+                    update_data['account'] = f"{proto}://{user}:{pwd}@{ip}:{port}"
+                    logger.warning(
+                        f"  [!] ДЕФОЛТНЫЕ УЧЁТКИ: {ip}:{port} "
+                        f"({web_auth.get('vendor_matched')}) - "
+                        f"{user}:{pwd_display}"
+                    )
+        
+        # Формируем account из SSH/WinRM если нет web_auth account
+        if 'account' not in update_data:
+            auth_method = update_data.get('auth_method') or host_info.get('auth_method', '')
+            if auth_method == 'ssh':
+                update_data['account'] = f"ssh://{ip}:22"
+            elif auth_method == 'winrm':
+                update_data['account'] = f"winrm://{ip}:5985"
         
         self.storage.update_host(ip, update_data)
         

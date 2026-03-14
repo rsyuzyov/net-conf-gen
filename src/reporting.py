@@ -72,7 +72,7 @@ class ReportGenerator:
                 f.write(f"{h['ip']}\n")
 
     def _generate_csv(self, hosts):
-        keys = ['ip', 'mac', 'vendor', 'model', 'hostname', 'os', 'os_type', 'type', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'last_updated']
+        keys = ['ip', 'mac', 'vendor', 'model', 'hostname', 'os', 'os_type', 'type', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'web_auth_status', 'default_creds_user', 'account', 'last_updated']
         with open(os.path.join(self.output_dir, 'scan_report.csv'), 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
             writer.writeheader()
@@ -84,6 +84,14 @@ class ReportGenerator:
                 # Форматируем сервисы как строку
                 if 'services' in row and isinstance(row['services'], list):
                     row['services'] = self._format_services(row['services'])
+                # Дефолтные учётки
+                web_auth = host.get('web_auth_check', {})
+                if isinstance(web_auth, dict) and web_auth.get('default_creds_found'):
+                    row['web_auth_status'] = f"ДЕФОЛТ:{web_auth.get('port')}"
+                    pwd = web_auth.get('password', '')
+                    row['default_creds_user'] = f"{web_auth.get('user', '')}:{pwd if pwd else '(пусто)'}"
+                elif isinstance(web_auth, dict) and web_auth.get('attempts'):
+                    row['web_auth_status'] = 'проверено'
                 writer.writerow(row)
 
     def _generate_json(self, data):
@@ -286,6 +294,18 @@ class ReportGenerator:
             if deep_scan_status == 'completed':
                 row_class += " deep-scan-completed"
             
+            # Дефолтные учётки
+            web_auth = host.get('web_auth_check', {})
+            web_auth_status = ''
+            default_creds_info = ''
+            if isinstance(web_auth, dict) and web_auth.get('default_creds_found'):
+                row_class += " default-creds-found"
+                pwd = web_auth.get('password', '')
+                web_auth_status = f"⚠ ДЕФОЛТ (порт {web_auth.get('port')})"
+                default_creds_info = f"{web_auth.get('user', '')}:{pwd if pwd else '(пусто)'}"
+            elif isinstance(web_auth, dict) and web_auth.get('attempts'):
+                web_auth_status = '✓ проверено'
+            
             row = f"""                <tr class="{row_class}">
                     <td>{escape_value(host.get('ip'))}</td>
                     <td>{escape_value(host.get('mac'))}</td>
@@ -299,6 +319,9 @@ class ReportGenerator:
                     <td>{escape_value(host.get('auth_method'))}</td>
                     <td>{escape_value(self._format_ports(host.get('open_ports')))}</td>
                     <td>{escape_value(self._format_services(host.get('services')))}</td>
+                    <td>{web_auth_status}</td>
+                    <td>{escape_value(default_creds_info)}</td>
+                    <td>{escape_value(host.get('account', ''))}</td>
                     <td>{escape_value(format_datetime(host.get('last_updated')))}</td>
                 </tr>
 """
