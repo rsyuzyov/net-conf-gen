@@ -1026,25 +1026,52 @@ class Fingerprinter:
                 update_data['os'] = 'Network Equipment'
                 logger.info(f"  Classified as network (vendor={vendor}, DNS port open)")
         
-        # SNMP-опрос для хостов с портом 161 или type='network'
-        if 161 in open_ports or update_data.get('type') in ('network', 'mikrotik'):
-            snmp_info = snmp_connector.snmp_get_info(ip)
-            if snmp_info:
-                update_data['snmp_info'] = snmp_info
-                # sysName → hostname (если не определён)
-                sys_name = snmp_info.get('sysName', '')
-                if sys_name and not update_data.get('hostname') and not current_hostname:
-                    update_data['hostname'] = sys_name.split('.')[0]
-                    logger.info(f"  Hostname via SNMP: {update_data['hostname']}")
-                # sysLocation → location
-                sys_location = snmp_info.get('sysLocation', '')
-                if sys_location:
-                    update_data['location'] = sys_location
-                # Уточнение os/type по sysDescr
-                snmp_os = snmp_connector.parse_snmp_os(snmp_info)
-                if snmp_os and update_data.get('os', 'Unknown') in ('Unknown', 'Network Device', 'Network Equipment'):
-                    update_data.update(snmp_os)
+        # SNMP-опрос: пытаемся для всех хостов (таймаут 1сек, без ответа — пропускаем)
+        snmp_info = snmp_connector.snmp_get_info(ip, timeout=1)
+        if snmp_info:
+            update_data['snmp_info'] = snmp_info
+            # sysDescr → сохраняем как есть
+            if snmp_info.get('sysDescr'):
+                update_data['snmp_sys_descr'] = snmp_info['sysDescr']
+            # sysName → hostname (если не определён)
+            sys_name = snmp_info.get('sysName', '')
+            if sys_name and not update_data.get('hostname') and not current_hostname:
+                update_data['hostname'] = sys_name.split('.')[0]
+                logger.info(f"  Hostname via SNMP: {update_data['hostname']}")
+            # sysLocation → location
+            sys_location = snmp_info.get('sysLocation', '')
+            if sys_location:
+                update_data['location'] = sys_location
+            # Уточнение os/type/vendor/model по sysDescr + sysObjectID
+            snmp_os = snmp_connector.parse_snmp_os(snmp_info)
+            if snmp_os:
+                # Vendor/model из SNMP — заполняем если пусто
+                if snmp_os.get('vendor'):
+                    update_data.setdefault('vendor', snmp_os['vendor'])
+                    if not update_data.get('vendor') or update_data.get('vendor') == snmp_os.get('vendor'):
+                        update_data['vendor'] = snmp_os['vendor']
+                if snmp_os.get('model'):
+                    update_data.setdefault('model', snmp_os['model'])
+                if snmp_os.get('firmware'):
+                    update_data['firmware'] = snmp_os['firmware']
+                if snmp_os.get('snmp_enterprise_vendor'):
+                    update_data['snmp_enterprise_vendor'] = snmp_os['snmp_enterprise_vendor']
+                # OS/type обновляем если текущее значение generic
+                current_os = update_data.get('os', 'Unknown')
+                generic_os_values = ('Unknown', 'Linux/Unix', 'IP Camera', 'Printer',
+                                     'Network Device', 'Network Equipment', 'SNMP Device')
+                if current_os in generic_os_values and snmp_os.get('os'):
+                    update_data['os'] = snmp_os['os']
+                    if snmp_os.get('os_type'):
+                        update_data['os_type'] = snmp_os['os_type']
+                    if snmp_os.get('type'):
+                        update_data['type'] = snmp_os['type']
                     logger.info(f"  OS via SNMP: {snmp_os.get('os')}")
+                elif snmp_os.get('type') and update_data.get('type') in ('server', 'workstation', None):
+                    # Уточняем type если SNMP даёт более конкретный (camera, printer, mikrotik...)
+                    if snmp_os['type'] in ('camera', 'printer', 'mikrotik', 'network'):
+                        update_data['type'] = snmp_os['type']
+                        logger.info(f"  Type refined via SNMP: {snmp_os['type']}")
         
         # Уточняем Windows type если hostname стал известен
         if update_data.get('os_type') == 'windows':
