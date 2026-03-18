@@ -284,6 +284,11 @@ class Fingerprinter:
         mac_vendor = host_info.get('vendor', '')  # сырой MAC-vendor
 
         os_name = update_data.get('os', '')
+        
+        # Нормализация русскоязычной ОС
+        if 'Майкрософт' in os_name:
+            os_name = os_name.replace('Майкрософт', 'Microsoft')
+            update_data['os'] = os_name
         http_title = update_data.get('http_title', '')
         ssl_cert = update_data.get('ssl_cert', {})
         snmp_info = update_data.get('snmp_info', {})
@@ -406,6 +411,16 @@ class Fingerprinter:
             if not vendor:
                 # Используем MAC vendor как есть, если не нашли в маппинге
                 vendor = mac_vendor
+
+        # Санитизация model
+        if model:
+            # Убираем IP-адреса из model
+            model = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '', model).strip()
+            # Убираем множественные пробелы
+            model = re.sub(r'\s{2,}', ' ', model).strip()
+            # Не используем HTTP-баннеры как model
+            if re.search(r'(Apache|nginx|OpenSSL|httpd)', model, re.IGNORECASE):
+                model = ''
 
         # Записываем
         if vendor:
@@ -764,9 +779,9 @@ class Fingerprinter:
             update_data.setdefault('model', 'Zabbix')
             logger.info(f"  Classified via deep analysis: Zabbix")
         
-        # NanoKVM
+        # NanoKVM (KVM-over-IP устройство, не сервер)
         if 'nanokvm' in all_titles:
-            update_data['type'] = 'server'
+            update_data['type'] = 'network'
             update_data['os'] = 'Linux/Unix'
             update_data.setdefault('vendor', 'Sipeed')
             update_data['model'] = 'NanoKVM'
@@ -827,8 +842,12 @@ class Fingerprinter:
                     logger.info(f"  RTSP banner detected, classified as camera")
 
     # ===== Windows Classification =====
-    def _classify_windows_type(self, hostname, open_ports):
+    def _classify_windows_type(self, hostname, open_ports, os_name=''):
         """Уточнение типа Windows: server vs workstation."""
+        # Windows Server в имени ОС → server
+        if os_name and 'server' in os_name.lower():
+            return 'server'
+        
         if hostname and hostname.lower().startswith('srv-'):
             return 'server'
 
@@ -1350,18 +1369,28 @@ class Fingerprinter:
         
         # Уточняем Windows type если hostname стал известен
         # Проверяем и по os_type, и по os (os_type может быть linux из TTL)
+        current_os_str = update_data.get('os', '')
         is_windows = (
             update_data.get('os_type') == 'windows'
-            or (update_data.get('os', '').startswith('Windows') and {135, 445} & set(open_ports))
+            or (current_os_str.startswith('Windows') and {135, 445} & set(open_ports))
+            or ('windows' in current_os_str.lower() and 135 in set(open_ports))
+            or ('microsoft' in current_os_str.lower() and 135 in set(open_ports))
         )
         if is_windows:
             hostname = update_data.get('hostname') or current_hostname or ''
-            update_data['type'] = self._classify_windows_type(hostname, open_ports)
+            update_data['type'] = self._classify_windows_type(hostname, open_ports, current_os_str)
             update_data['os_type'] = 'windows'  # корректируем os_type
         
         # Уточняем Network Equipment type
         if update_data.get('type') in ('unknown', 'server') and update_data.get('os') in ('Network Equipment', 'Network Device'):
             update_data['type'] = 'network'
+        
+        # Vendor-based фолбэк для сетевых устройств
+        network_vendors = ('TP-Link', 'ASUS', 'D-Link', 'Netgear', 'Tenda', 'Zyxel')
+        if update_data.get('type') == 'unknown' and update_data.get('vendor') in network_vendors:
+            update_data['type'] = 'network'
+            if not update_data.get('os') or update_data.get('os') in ('Linux/Unix', 'Unknown'):
+                update_data['os'] = 'Network Equipment'
         
         # Определяем vendor (бренд) и model (продукт/модель)
         self._determine_vendor_model(update_data, host_info)

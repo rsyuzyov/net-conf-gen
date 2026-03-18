@@ -100,10 +100,10 @@ class ConnectionChecker:
             'ip': ip,
             'mac': host_info.get('mac'),
             'vendor': host_info.get('vendor'),
-            'hostname': '',
-            'os': '',
-            'os_type': 'linux',
-            'type': 'unknown',
+            'hostname': host_info.get('hostname', ''),
+            'os': host_info.get('os', ''),
+            'os_type': host_info.get('os_type', 'linux'),
+            'type': host_info.get('type', 'unknown'),
             'deep_scan_status': 'failed',
             'auth_methods': [],  # Список всех рабочих протоколов
             'auth_attempts': []  # Обязательное поле для всех попыток
@@ -444,6 +444,20 @@ class ConnectionChecker:
                     errors.add(f"{attempt.get('method', '?')}: {attempt['error']}")
             if errors:
                 result['scan_errors'] = list(errors)
+        
+        # Пост-обработка: нормализация OS и уточнение type
+        os_str = result.get('os', '')
+        if isinstance(os_str, str):
+            # Нормализация «Майкрософт» → «Microsoft»
+            if 'Майкрософт' in os_str:
+                os_str = os_str.replace('Майкрософт', 'Microsoft')
+                result['os'] = os_str
+            
+            # Windows Server → server
+            if 'windows' in os_str.lower():
+                result['os_type'] = 'windows'
+                if 'server' in os_str.lower():
+                    result['type'] = 'server'
         
         self.storage.update_host(ip, result)
         logger.info(f"{ip}: Проверка завершена. Статус: {result['deep_scan_status']}, "
