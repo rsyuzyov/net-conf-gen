@@ -4,6 +4,8 @@ import logging
 import subprocess
 import platform
 import re
+import html as html_module
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.connectors import snmp as snmp_connector
 from src.connectors import http as http_connector
@@ -162,6 +164,112 @@ class Fingerprinter:
         'dahua': 'Dahua',
     }
 
+    # ===== Linux kernel version → distro heuristic =====
+    _LINUX_KERNEL_PATTERNS = [
+        # (паттерн в kernel_version, название дистрибутива)
+        ('-pve', 'Proxmox VE (Debian)'),
+        ('.el9', 'RHEL/CentOS/AlmaLinux 9'),
+        ('.el8', 'RHEL/CentOS/AlmaLinux 8'),
+        ('.el7', 'CentOS/RHEL 7'),
+        ('.el6', 'CentOS/RHEL 6'),
+        ('-amd64', 'Debian'),
+        ('-686-pae', 'Debian (32-bit)'),
+        ('-686', 'Debian (32-bit)'),
+        ('-generic', 'Ubuntu'),
+        ('-lowlatency', 'Ubuntu (lowlatency)'),
+        ('-alt', 'ALT Linux'),
+        ('-arch', 'Arch Linux'),
+        ('.fc', 'Fedora'),
+        ('-lts', 'Linux (LTS)'),
+    ]
+
+    def _linux_model_from_kernel(self, kernel_version):
+        """Определяет дистрибутив Linux по характерным суффиксам ядра."""
+        if not kernel_version:
+            return ''
+        kv = str(kernel_version).lower()
+        for pattern, distro in self._LINUX_KERNEL_PATTERNS:
+            if pattern in kv:
+                return distro
+        return ''
+
+    # ===== Windows kernel version → OS model =====
+    # Маппинг: major.minor.build → название ОС
+    _WINDOWS_KERNEL_MAP = {
+        # major.minor → (desktop, server)
+        '5.1': ('Windows XP', None),
+        '5.2': ('Windows XP x64', 'Windows Server 2003'),
+        '6.0': ('Windows Vista', 'Windows Server 2008'),
+        '6.1': ('Windows 7', 'Windows Server 2008 R2'),
+        '6.2': ('Windows 8', 'Windows Server 2012'),
+        '6.3': ('Windows 8.1', 'Windows Server 2012 R2'),
+    }
+
+    # 10.0.xxxxx — различаем по build number
+    _WINDOWS_10_BUILD_MAP = {
+        # Build → (desktop, server)
+        10240: ('Windows 10 1507', None),
+        10586: ('Windows 10 1511', None),
+        14393: ('Windows 10 1607', 'Windows Server 2016'),
+        15063: ('Windows 10 1703', None),
+        16299: ('Windows 10 1709', None),
+        17134: ('Windows 10 1803', None),
+        17763: ('Windows 10 1809', 'Windows Server 2019'),
+        18362: ('Windows 10 1903', None),
+        18363: ('Windows 10 1909', None),
+        19041: ('Windows 10 2004', None),
+        19042: ('Windows 10 20H2', None),
+        19043: ('Windows 10 21H1', None),
+        19044: ('Windows 10 21H2', None),
+        19045: ('Windows 10 22H2', None),
+        20348: (None, 'Windows Server 2022'),
+        22000: ('Windows 11 21H2', None),
+        22621: ('Windows 11 22H2', None),
+        22631: ('Windows 11 23H2', None),
+        26100: ('Windows 11 24H2', 'Windows Server 2025'),
+    }
+
+    def _windows_model_from_kernel(self, kernel_version, host_type=''):
+        """Определяет имя ОС Windows по kernel_version (major.minor.build)."""
+        if not kernel_version:
+            return ''
+        parts = str(kernel_version).split('.')
+        if len(parts) < 2:
+            return ''
+        major_minor = f"{parts[0]}.{parts[1]}"
+        is_server = host_type == 'server'
+
+        # Windows 5.x, 6.x
+        if major_minor in self._WINDOWS_KERNEL_MAP:
+            desktop, server = self._WINDOWS_KERNEL_MAP[major_minor]
+            if is_server and server:
+                return server
+            return desktop or server or ''
+
+        # Windows 10.0.xxxxx
+        if major_minor == '10.0' and len(parts) >= 3:
+            try:
+                build = int(parts[2])
+            except ValueError:
+                return 'Windows 10+'
+            # Точное совпадение
+            if build in self._WINDOWS_10_BUILD_MAP:
+                desktop, server = self._WINDOWS_10_BUILD_MAP[build]
+                if is_server and server:
+                    return server
+                return desktop or server or f'Windows 10 (build {build})'
+            # Ближайший известный build
+            known_builds = sorted(self._WINDOWS_10_BUILD_MAP.keys())
+            closest = min(known_builds, key=lambda b: abs(b - build))
+            if abs(closest - build) <= 500:
+                desktop, server = self._WINDOWS_10_BUILD_MAP[closest]
+                if is_server and server:
+                    return server
+                return desktop or server or f'Windows 10 (build {build})'
+            return f'Windows (build {build})'
+
+        return ''
+
     def _determine_vendor_model(self, update_data, host_info):
         """
         Определяет vendor (бренд) и model (продукт/модель) по всем источникам.
@@ -257,8 +365,33 @@ class Fingerprinter:
                 model = model or 'Proxmox VE'
             elif 'windows' in os_lower:
                 vendor = vendor or 'Microsoft'
+                # Определяем model из kernel_version или полного имени ОС
+                if not model:
+                    kernel_ver = host_info.get('kernel_version', '')
+                    if kernel_ver:
+                        model = self._windows_model_from_kernel(kernel_ver, host_type)
+                    # Если os содержит полное имя из WMI (не просто "Windows")
+                    if not model and os_name and os_name != 'Windows' and 'windows' in os_lower:
+                        # "Microsoft Windows Server 2019 Standard" → "Windows Server 2019 Standard"
+                        clean = os_name.replace('Microsoft ', '').strip()
+                        if clean and clean != 'Windows':
+                            model = clean
             elif host_type == 'printer' and 'printer' in os_lower:
                 pass  # vendor уже определён из title/mac
+            elif 'linux' in os_lower or 'unix' in os_lower:
+                # Определяем model из distribution или kernel_version
+                if not model:
+                    distro = host_info.get('distribution', '')
+                    if distro:
+                        model = distro
+                    elif os_name and os_name not in ('Linux', 'Linux/Unix', 'Unknown'):
+                        # os может содержать distribution из SSH-коннектора
+                        model = os_name
+                    else:
+                        # Пытаемся определить из kernel_version
+                        kernel_ver = host_info.get('kernel_version', '')
+                        if kernel_ver:
+                            model = self._linux_model_from_kernel(kernel_ver)
 
         # --- 5. MAC vendor (fallback + нормализация) ---
         if mac_vendor:
@@ -291,8 +424,12 @@ class Fingerprinter:
             return ""
 
     # ===== HTTP Title =====
-    def _get_http_title(self, ip, port=80, timeout=3):
-        """Получить <title> с HTTP-страницы."""
+    def _get_http_title(self, ip, port=80, timeout=3, return_body=False):
+        """Получить <title> с HTTP-страницы.
+        
+        Args:
+            return_body: если True, возвращает кортеж (title, body_snippet)
+        """
         try:
             import urllib.request
             import urllib.error
@@ -305,12 +442,18 @@ class Fingerprinter:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
-                body = response.read(4096).decode('utf-8', errors='ignore')
+                body = response.read(8192).decode('utf-8', errors='ignore')
+                title = ''
                 match = re.search(r'<title>(.*?)</title>', body, re.IGNORECASE | re.DOTALL)
                 if match:
-                    return match.group(1).strip()
+                    title = html_module.unescape(match.group(1).strip())
+                if return_body:
+                    return title, body
+                return title
         except Exception:
             pass
+        if return_body:
+            return '', ''
         return ""
 
     # ===== SSL Certificate =====
@@ -389,6 +532,10 @@ class Fingerprinter:
         if 5985 in ports:
             return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
 
+        # RPC (135) = Windows
+        if 135 in ports:
+            return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
+
         # Kerio Control: порт 4081 (админка) или 4040
         if ports & {4081, 4040}:
             return {'os': 'Kerio Control', 'os_type': 'linux', 'type': 'network'}
@@ -410,13 +557,16 @@ class Fingerprinter:
         """
         ports = set(open_ports)
 
-        # HTTP title со всех HTTP-подобных портов
+        # HTTP title и body со всех HTTP-подобных портов
         http_titles = {}
+        http_bodies = {}
         for port in sorted(ports & self.HTTP_PORTS):
-            title = self._get_http_title(ip, port=port, timeout=3)
+            title, body = self._get_http_title(ip, port=port, timeout=3, return_body=True)
             if title:
                 http_titles[port] = title
                 logger.info(f"  HTTP title {ip}:{port} = {title[:60]}")
+            if body:
+                http_bodies[port] = body
         
         if http_titles:
             update_data['http_titles'] = http_titles
@@ -452,15 +602,16 @@ class Fingerprinter:
             update_data['extra_banners'] = extra_banners
 
         # Дополнительная классификация на основе собранных данных
-        self._classify_from_deep_analysis(update_data, http_titles, ssl_certs, extra_banners)
+        self._classify_from_deep_analysis(update_data, http_titles, ssl_certs, extra_banners, http_bodies)
 
-    def _classify_from_deep_analysis(self, update_data, http_titles, ssl_certs, extra_banners):
+    def _classify_from_deep_analysis(self, update_data, http_titles, ssl_certs, extra_banners, http_bodies=None):
         """
         Дополнительная классификация хоста на основе данных глубокого анализа портов.
         Используется когда стандартные методы не дали высокой уверенности.
         """
         current_type = update_data.get('type', 'unknown')
         current_os = update_data.get('os', 'Unknown')
+        http_bodies = http_bodies or {}
         
         # Если тип уже определён с высокой уверенностью, не трогаем
         if current_type not in ('unknown', 'server', 'workstation') and \
@@ -469,6 +620,44 @@ class Fingerprinter:
         
         # Анализируем HTTP title со всех портов
         all_titles = ' '.join(http_titles.values()).lower() if http_titles else ''
+        # Объединяем body со всех портов для поиска маркеров
+        all_bodies = ' '.join(http_bodies.values()).lower() if http_bodies else ''
+        
+        # TP-Link роутеры (определяем по body, т.к. title часто "login" или "Opening...")
+        # Маркеры: литеральный "tp-link", или SPA-фреймворк (tpEncrypt.js, $.su.App)
+        is_tplink = (
+            'tp-link' in all_bodies or 'tplinkwifi' in all_bodies or 'tp-link' in all_titles or
+            'tpencrypt' in all_bodies or ('$.su.app' in all_bodies and '$.su.language' in all_bodies)
+        )
+        if is_tplink:
+            update_data['type'] = 'network'
+            update_data['os'] = 'Network Equipment'
+            update_data.setdefault('vendor', 'TP-Link')
+            # Определение модели из body
+            model_match = re.search(
+                r'(TL-[A-Z]{1,3}\d{2,5}[A-Z]?|Archer\s*[A-Z]\d{1,4}|Deco\s*[A-Z]\d{1,4})',
+                ' '.join(http_bodies.values()) if http_bodies else '',
+                re.IGNORECASE
+            )
+            if model_match:
+                update_data.setdefault('model', model_match.group(1))
+            else:
+                update_data.setdefault('model', 'TP-Link Router')
+            logger.info(f"  Classified via deep analysis: TP-Link ({update_data.get('model')})")
+        
+        # D-Link роутеры
+        if not update_data.get('vendor') and ('d-link' in all_bodies or 'd-link' in all_titles):
+            update_data['type'] = 'network'
+            update_data['os'] = 'Network Equipment'
+            update_data.setdefault('vendor', 'D-Link')
+            model_match = re.search(
+                r'(D[AIRS][LRPN]-\d{2,5}[A-Z]?)',
+                ' '.join(http_bodies.values()) if http_bodies else '',
+                re.IGNORECASE
+            )
+            if model_match:
+                update_data.setdefault('model', model_match.group(1))
+            logger.info(f"  Classified via deep analysis: D-Link")
         
         # Grafana
         if 'grafana' in all_titles:
@@ -936,8 +1125,20 @@ class Fingerprinter:
             update_data['hostname'] = fp_hostname
         
         # Расширенный анализ портов: HTTP title, SSL cert, баннеры
-        # с ВСЕХ HTTP/HTTPS-подобных портов (не только 80/443)
-        self._deep_port_analysis(ip, open_ports, update_data)
+        # Выполняем ТОЛЬКО если хост не определён через подключение (SSH/WinRM/PsExec)
+        # и lightweight_fingerprint не дал высокой уверенности
+        deep_scan = host_info.get('deep_scan_status', '')
+        has_connection = deep_scan == 'completed'
+        high_confidence = fp_result.get('confidence') == 'high'
+        
+        if not has_connection and not high_confidence:
+            self._deep_port_analysis(ip, open_ports, update_data)
+        else:
+            # Для определённых хостов — только HTTP title с порта 80 (быстро)
+            if open_ports and 80 in open_ports:
+                title = self._get_http_title(ip, port=80, timeout=3)
+                if title:
+                    update_data['http_title'] = title
 
         # SSL cert → hostname и уточнение ОС
         ssl_cert = update_data.get('ssl_cert', {})
@@ -1026,8 +1227,32 @@ class Fingerprinter:
                 update_data['os'] = 'Network Equipment'
                 logger.info(f"  Classified as network (vendor={vendor}, DNS port open)")
         
-        # SNMP-опрос: пытаемся для всех хостов (таймаут 1сек, без ответа — пропускаем)
-        snmp_info = snmp_connector.snmp_get_info(ip, timeout=1)
+        # Очистка ложных service labels (#5, #6)
+        final_type = update_data.get('type', '')
+        services = host_info.get('services', [])
+        if isinstance(services, list) and services:
+            cleaned = list(services)
+            # #5: Убирать MikroTik-Winbox у принтеров
+            if final_type == 'printer' and 'MikroTik-Winbox' in cleaned:
+                cleaned.remove('MikroTik-Winbox')
+            # #6: Убирать Printer у серверов
+            if final_type == 'server' and 'Printer' in cleaned:
+                cleaned.remove('Printer')
+            if cleaned != services:
+                update_data['services'] = cleaned
+        
+        # SNMP-опрос: пропускаем для камер/принтеров с уже определённым vendor/model
+        device_fully_identified = (
+            final_type in ('camera', 'printer') and
+            update_data.get('vendor') and
+            update_data.get('model')
+        )
+        if device_fully_identified:
+            logger.debug(f"  SNMP пропущен — {final_type} уже идентифицирован: "
+                        f"{update_data.get('vendor')} {update_data.get('model')}")
+            snmp_info = {}
+        else:
+            snmp_info = snmp_connector.snmp_get_info(ip, timeout=1)
         if snmp_info:
             update_data['snmp_info'] = snmp_info
             # sysDescr → сохраняем как есть
@@ -1084,6 +1309,11 @@ class Fingerprinter:
         # Проверка дефолтных учётных данных через HTTP
         http_ports = {80, 443, 3000, 4040, 4081, 5000, 5001, 8006, 8080, 8443, 10000}
         if http_ports & set(open_ports):
+            # Сбрасываем старый HTTP account (мог остаться от прошлого сканирования)
+            old_account = host_info.get('account', '')
+            if old_account.startswith('http://') or old_account.startswith('https://'):
+                update_data['account'] = ''
+            
             # Собираем актуальную информацию для маппинга
             merged_info = dict(host_info)
             merged_info.update(update_data)
@@ -1140,10 +1370,26 @@ class Fingerprinter:
             logger.info("Нет хостов для fingerprinting (все имеют deep_scan_status=completed)")
             return
         
-        logger.info(f"Найдено хостов для fingerprinting: {len(hosts_to_scan)}")
+        total = len(hosts_to_scan)
+        logger.info(f"Найдено хостов для fingerprinting: {total}")
         
-        # Выполняем fingerprinting для каждого хоста
-        for ip in hosts_to_scan:
-            self._fingerprint_host(ip, force=True)  # force=True т.к. уже отфильтровали
+        # Параллельный fingerprinting
+        completed_count = 0
+        max_workers = min(10, total)
         
-        logger.info(f"Fingerprinting завершен для {len(hosts_to_scan)} хостов")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._fingerprint_host, ip, True): ip
+                for ip in hosts_to_scan
+            }
+            for future in as_completed(futures):
+                ip = futures[future]
+                completed_count += 1
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"Ошибка fingerprinting {ip}: {e}")
+                if completed_count % 10 == 0 or completed_count == total:
+                    logger.info(f"Fingerprinting: {completed_count}/{total} хостов")
+        
+        logger.info(f"Fingerprinting завершён для {total} хостов.")

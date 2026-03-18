@@ -430,6 +430,13 @@ class ConnectionChecker:
         else:
             # Ни один протокол не ответил корректно
             result['deep_scan_status'] = 'scanned_no_access'
+            # Собираем причины ошибок для диагностики
+            errors = set()
+            for attempt in result.get('auth_attempts', []):
+                if attempt.get('status') == 'error' and attempt.get('error'):
+                    errors.add(f"{attempt.get('method', '?')}: {attempt['error']}")
+            if errors:
+                result['scan_errors'] = list(errors)
         
         self.storage.update_host(ip, result)
         logger.info(f"{ip}: Проверка завершена. Статус: {result['deep_scan_status']}, "

@@ -2,6 +2,7 @@ import json
 import os
 import logging
 from datetime import datetime
+from src.utils import ip_to_int
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +27,6 @@ class Storage:
     def save(self):
         try:
             # Sort IPs in ascending order
-            def ip_to_int(ip):
-                """Convert IP address to integer for proper sorting."""
-                try:
-                    parts = ip.split('.')
-                    return int(parts[0]) * 16777216 + int(parts[1]) * 65536 + int(parts[2]) * 256 + int(parts[3])
-                except Exception as e:
-                    logger.warning(f"Некорректный IP при сортировке: {ip}, {e}")
-                    return 0
-            
             sorted_data = dict(sorted(self.data.items(), key=lambda x: ip_to_int(x[0])))
             
             with open(self.state_file, 'w', encoding='utf-8') as f:

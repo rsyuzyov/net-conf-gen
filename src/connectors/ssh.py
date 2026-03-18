@@ -85,7 +85,8 @@ class SSHConnector(BaseConnector):
                 'type': 'server',
                 'user': user,
                 'mac': os_info.get('mac', ''),
-                'kernel_version': os_info.get('kernel_version', '')
+                'kernel_version': os_info.get('kernel_version', ''),
+                'distribution': os_info.get('distribution', '')
             }
             
             return result

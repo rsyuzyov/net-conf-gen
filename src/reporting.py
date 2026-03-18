@@ -5,6 +5,7 @@ import os
 import logging
 from datetime import datetime
 import html
+from src.utils import ip_to_int
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +36,15 @@ class ReportGenerator:
             return ', '.join(services)
         return str(services)
 
-    def _ip_to_int(self, ip):
-        """Convert IP address to integer for proper sorting."""
-        try:
-            parts = ip.split('.')
-            return int(parts[0]) * 16777216 + int(parts[1]) * 65536 + int(parts[2]) * 256 + int(parts[3])
-        except Exception as e:
-            logger.warning(f"Некорректный IP при сортировке: {ip}, {e}")
-            return 0
+
 
     def _sort_hosts_by_ip(self, hosts):
         """Sort hosts list by IP address."""
-        return sorted(hosts, key=lambda h: self._ip_to_int(h.get('ip', '')))
+        return sorted(hosts, key=lambda h: ip_to_int(h.get('ip', '')))
 
     def _sort_data_by_ip(self, data):
         """Sort data dictionary by IP address."""
-        return dict(sorted(data.items(), key=lambda x: self._ip_to_int(x[0])))
+        return dict(sorted(data.items(), key=lambda x: ip_to_int(x[0])))
 
     def generate_all(self):
         data = self.storage.data

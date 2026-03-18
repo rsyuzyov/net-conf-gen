@@ -139,7 +139,7 @@ def _check_success(response_code, response_body, success_indicator):
     return True
 
 
-def _try_http_basic(ip, port, path, user, password, success_indicator, timeout=5):
+def _try_http_basic(ip, port, path, user, password, success_indicator, timeout=3):
     """Проверка HTTP Basic Auth."""
     url = _build_url(ip, port, path)
     
@@ -173,7 +173,7 @@ def _try_http_basic(ip, port, path, user, password, success_indicator, timeout=5
     return None
 
 
-def _try_http_digest(ip, port, path, user, password, success_indicator, timeout=5):
+def _try_http_digest(ip, port, path, user, password, success_indicator, timeout=3):
     """Проверка HTTP Digest Auth (упрощённая реализация)."""
     url = _build_url(ip, port, path)
     
@@ -261,7 +261,7 @@ def _try_http_digest(ip, port, path, user, password, success_indicator, timeout=
     return None
 
 
-def _try_http_post_form(ip, port, path, user, password, post_data_template, success_indicator, timeout=5):
+def _try_http_post_form(ip, port, path, user, password, post_data_template, success_indicator, timeout=3):
     """Проверка через HTTP POST (form-encoded)."""
     url = _build_url(ip, port, _format_url(path, user, password))
     
@@ -306,7 +306,7 @@ def _try_http_post_form(ip, port, path, user, password, post_data_template, succ
     return None
 
 
-def _try_http_post_json(ip, port, path, user, password, post_data_template, success_indicator, timeout=5):
+def _try_http_post_json(ip, port, path, user, password, post_data_template, success_indicator, timeout=3):
     """Проверка через HTTP POST (JSON body)."""
     url = _build_url(ip, port, _format_url(path, user, password))
     
@@ -341,7 +341,7 @@ def _try_http_post_json(ip, port, path, user, password, post_data_template, succ
     return None
 
 
-def _try_http_no_auth(ip, port, path, success_indicator, timeout=5):
+def _try_http_no_auth(ip, port, path, success_indicator, timeout=3):
     """Проверка доступа без аутентификации (принтеры, etc)."""
     url = _build_url(ip, port, path)
     
@@ -473,6 +473,23 @@ def check_default_credentials(ip, host_info, default_creds_db=None):
                 password = cred['password']
                 
                 result = None
+                
+                # Pre-check для http_basic: проверяем один раз на порт, нужна ли авторизация
+                if auth_type == 'http_basic':
+                    pre_url = _build_url(ip, port, check_url)
+                    try:
+                        pre_req = urllib.request.Request(pre_url)
+                        pre_req.add_header('User-Agent', 'net-conf-gen/1.0')
+                        ctx = _get_ssl_context() if pre_url.startswith('https') else None
+                        with urllib.request.urlopen(pre_req, timeout=3, context=ctx) as resp:
+                            if resp.status == 200:
+                                logger.debug(f"  HTTP Basic {ip}:{port} — сервер отвечает 200 без auth, пропускаем")
+                                break  # Пропускаем все creds для этого порта
+                    except urllib.error.HTTPError as e:
+                        if e.code != 401:
+                            break  # Не auth-related, пропускаем порт
+                    except Exception:
+                        pass  # Продолжаем проверку
                 
                 if auth_type == 'http_basic':
                     result = _try_http_basic(ip, port, check_url, user, password, success_indicator)
