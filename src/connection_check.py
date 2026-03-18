@@ -41,13 +41,19 @@ class ConnectionChecker:
     def _has_required_ports(self, host_info):
         """
         Проверяет, есть ли у хоста открытые порты для SSH, WinRM или PSExec.
+        Пропускает камеры и принтеры — Deep Scan для них бесполезен.
         
         Args:
             host_info: информация о хосте из storage
             
         Returns:
-            bool: True если есть нужные порты
+            bool: True если есть нужные порты и тип устройства подходит
         """
+        # Камеры и принтеры — пропускаем Deep Scan
+        device_type = host_info.get('type', '')
+        if device_type in ('camera', 'printer'):
+            return False
+        
         open_ports = host_info.get('open_ports', [])
         if not open_ports:
             return False
@@ -79,7 +85,8 @@ class ConnectionChecker:
         
         # Проверяем наличие нужных портов
         if not self._has_required_ports(host_info):
-            logger.info(f"{ip}: Нет открытых портов для подключения (SSH:22, WinRM:5985, SMB:445)")
+            logger.info(f"{ip}: Нет открытых портов для подключения (SSH:22, WinRM:5985, SMB:445), пропускаем")
+            self.storage.update_host(ip, {'deep_scan_status': 'skipped'})
             return None
         
         # Проверяем кэш
@@ -463,6 +470,9 @@ class ConnectionChecker:
             for ip, host_info in all_hosts.items():
                 if self._has_required_ports(host_info):
                     hosts.append(ip)
+                elif not host_info.get('deep_scan_status'):
+                    # Нет management-портов — помечаем как пропущенный
+                    self.storage.update_host(ip, {'deep_scan_status': 'skipped'})
             logger.info(f"Проверка всех хостов с открытыми портами SSH/WinRM/SMB: {len(hosts)} хостов")
         else:
             logger.info(f"Проверка указанных хостов: {len(hosts)} хостов")

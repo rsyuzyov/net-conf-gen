@@ -99,10 +99,35 @@ def main():
         for host in hosts:
             storage.update_host(host['ip'], host)
     
-    # 3. Connection Check Stage
+    # 3. Fingerprint Stage (определяет type, vendor, model до Deep Scan)
+    if args.step in ['fingerprint', 'all']:
+        from src.fingerprint import Fingerprinter
+        logger.info("=== Stage 2: Fingerprinting ===")
+        
+        fingerprint = Fingerprinter(storage)
+        
+        # If specific host is requested
+        if args.host:
+            ip = args.host
+            # Check if host exists in storage
+            if ip not in storage.data:
+                logger.error(f"Хост {ip} не найден в storage. Запустите сначала discovery для этого хоста.")
+                sys.exit(1)
+            
+            logger.info(f"Fingerprinting хоста: {ip}")
+            fingerprint.run(host_ip=ip, force=args.force)
+        else:
+            if not storage.data:
+                logger.warning("Нет хостов в storage. Запустите сначала discovery.")
+            else:
+                fingerprint.run(force=args.force)
+        
+        logger.info("Fingerprinting завершен.")
+
+    # 4. Connection Check Stage (SSH/WinRM/PSExec — после fingerprint, знает type)
     if args.step in ['connection-check', 'all']:
         from src.connection_check import ConnectionChecker
-        logger.info("=== Stage 2: Connection Check ===")
+        logger.info("=== Stage 3: Connection Check ===")
         
         connection_checker = ConnectionChecker(config.get('credentials', []), storage)
         
@@ -128,33 +153,7 @@ def main():
                 connection_checker.check_all_hosts(hosts=None, concurrency=config.get('concurrency', 20), force=args.force)
                 logger.info("Проверка подключения завершена.")
 
-    # 4. Fingerprint Stage
-    if args.step in ['fingerprint', 'all']:
-        from src.fingerprint import Fingerprinter
-        logger.info("=== Stage 3: Fingerprinting ===")
-        
-        fingerprint = Fingerprinter(storage)
-        
-        # If specific host is requested
-        if args.host:
-            ip = args.host
-            # Check if host exists in storage
-            if ip not in storage.data:
-                logger.error(f"Хост {ip} не найден в storage. Запустите сначала discovery для этого хоста.")
-                sys.exit(1)
-            
-            logger.info(f"Fingerprinting хоста: {ip}")
-            fingerprint.run(host_ip=ip, force=args.force)
-        else:
-            # Fingerprint all hosts with deep_scan_status != 'completed'
-            if not storage.data:
-                logger.warning("Нет хостов в storage. Запустите сначала discovery.")
-            else:
-                fingerprint.run(force=args.force)
-        
-        logger.info("Fingerprinting завершен.")
-
-    # 5. Reporting Stage
+    # 5. Reporting Stage (после всех стадий)
     if args.step in ['report', 'all']:
         from src.reporting import ReportGenerator
         logger.info("=== Stage 4: Reporting ===")

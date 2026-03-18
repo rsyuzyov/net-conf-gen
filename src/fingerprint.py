@@ -8,7 +8,6 @@ import html as html_module
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.connectors import snmp as snmp_connector
-from src.connectors import http as http_connector
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +32,7 @@ class Fingerprinter:
             storage: Storage объект (опционально, для работы в режиме шага)
         """
         self.storage = storage
-        
-        # Загрузка базы дефолтных учётных данных
-        self._default_creds_db = http_connector.load_default_credentials()
-        
+
         # Инициализация MAC lookup
         if HAS_MAC_LOOKUP:
             try:
@@ -393,7 +389,14 @@ class Fingerprinter:
                         if kernel_ver:
                             model = self._linux_model_from_kernel(kernel_ver)
 
-        # --- 5. MAC vendor (fallback + нормализация) ---
+        # --- 5. Hostname-based vendor detection ---
+        hostname = update_data.get('hostname', '') or host_info.get('hostname', '')
+        if hostname and not vendor:
+            # NPI* hostname → HP printer
+            if hostname.upper().startswith('NPI'):
+                vendor = 'HP'
+
+        # --- 6. MAC vendor (fallback + нормализация) ---
         if mac_vendor:
             mac_lower = mac_vendor.lower()
             for pattern, normalized in self._MAC_VENDOR_MAP.items():
@@ -442,7 +445,8 @@ class Fingerprinter:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
-                body = response.read(8192).decode('utf-8', errors='ignore')
+                read_size = 32768 if return_body else 4096
+                body = response.read(read_size).decode('utf-8', errors='ignore')
                 title = ''
                 match = re.search(r'<title>(.*?)</title>', body, re.IGNORECASE | re.DOTALL)
                 if match:
@@ -658,6 +662,52 @@ class Fingerprinter:
             if model_match:
                 update_data.setdefault('model', model_match.group(1))
             logger.info(f"  Classified via deep analysis: D-Link")
+        
+        # ASUS роутеры (Main_Login.asp + httpd/2.0 — уникальный паттерн)
+        if not update_data.get('vendor') and 'main_login.asp' in all_bodies:
+            update_data['type'] = 'network'
+            update_data['os'] = 'Network Equipment'
+            update_data.setdefault('vendor', 'ASUS')
+            # Модель из body: RT-AC68U, RT-AX86U и т.д.
+            model_match = re.search(
+                r'(RT-[A-Z]{1,4}\d{2,5}[A-Z]?|GT-[A-Z]{1,4}\d{2,5})',
+                ' '.join(http_bodies.values()) if http_bodies else '',
+                re.IGNORECASE
+            )
+            if model_match:
+                update_data.setdefault('model', model_match.group(1))
+            else:
+                update_data.setdefault('model', 'ASUS Router')
+            logger.info(f"  Classified via deep analysis: ASUS ({update_data.get('model')})")
+        
+        # Kyocera принтеры
+        if not update_data.get('vendor') and 'kyocera' in all_bodies:
+            update_data['type'] = 'printer'
+            update_data['os'] = 'Printer'
+            update_data.setdefault('vendor', 'Kyocera')
+            model_match = re.search(
+                r'(ECOSYS\s*[A-Z]\d{4}[a-z]*|TASKalfa\s*\d{3,4}[a-z]*)',
+                ' '.join(http_bodies.values()) if http_bodies else '',
+                re.IGNORECASE
+            )
+            if model_match:
+                update_data.setdefault('model', model_match.group(1))
+            logger.info(f"  Classified via deep analysis: Kyocera")
+        
+        # Canon принтеры (title: "Удаленный ИП: Вход: LBP233" или "Remote UI: Login: MF244")
+        canon_match = re.search(r'(LBP\d{3,4}\w*|MF\d{3,4}\w*|iR-ADV\s*\w+)', all_titles, re.IGNORECASE)
+        if not update_data.get('vendor') and canon_match:
+            update_data['type'] = 'printer'
+            update_data['os'] = 'Printer'
+            update_data.setdefault('vendor', 'Canon')
+            update_data.setdefault('model', canon_match.group(1).upper())
+            logger.info(f"  Classified via deep analysis: Canon ({canon_match.group(1)})")
+        
+        # Камеры с RSVideoOcx (ActiveX видеоплеер)
+        if not update_data.get('vendor') and 'rsvideoocx' in all_bodies:
+            update_data['type'] = 'camera'
+            update_data['os'] = 'IP Camera'
+            logger.info(f"  Classified via deep analysis: IP Camera (RSVideoOcx)")
         
         # Grafana
         if 'grafana' in all_titles:
@@ -1299,53 +1349,24 @@ class Fingerprinter:
                         logger.info(f"  Type refined via SNMP: {snmp_os['type']}")
         
         # Уточняем Windows type если hostname стал известен
-        if update_data.get('os_type') == 'windows':
+        # Проверяем и по os_type, и по os (os_type может быть linux из TTL)
+        is_windows = (
+            update_data.get('os_type') == 'windows'
+            or (update_data.get('os', '').startswith('Windows') and {135, 445} & set(open_ports))
+        )
+        if is_windows:
             hostname = update_data.get('hostname') or current_hostname or ''
             update_data['type'] = self._classify_windows_type(hostname, open_ports)
+            update_data['os_type'] = 'windows'  # корректируем os_type
+        
+        # Уточняем Network Equipment type
+        if update_data.get('type') in ('unknown', 'server') and update_data.get('os') in ('Network Equipment', 'Network Device'):
+            update_data['type'] = 'network'
         
         # Определяем vendor (бренд) и model (продукт/модель)
         self._determine_vendor_model(update_data, host_info)
         
-        # Проверка дефолтных учётных данных через HTTP
-        http_ports = {80, 443, 3000, 4040, 4081, 5000, 5001, 8006, 8080, 8443, 10000}
-        if http_ports & set(open_ports):
-            # Сбрасываем старый HTTP account (мог остаться от прошлого сканирования)
-            old_account = host_info.get('account', '')
-            if old_account.startswith('http://') or old_account.startswith('https://'):
-                update_data['account'] = ''
-            
-            # Собираем актуальную информацию для маппинга
-            merged_info = dict(host_info)
-            merged_info.update(update_data)
-            
-            web_auth = http_connector.check_default_credentials(
-                ip, merged_info, self._default_creds_db
-            )
-            if web_auth:
-                update_data['web_auth_check'] = web_auth
-                if web_auth.get('default_creds_found'):
-                    user = web_auth.get('user', '')
-                    pwd = web_auth.get('password', '')
-                    port = web_auth.get('port', 80)
-                    auth_type = web_auth.get('auth_type', 'http')
-                    # Формируем поле account: протокол://user:password@ip:port
-                    proto = 'https' if port in (443, 4081, 5001, 8006, 8443, 10000) else 'http'
-                    pwd_display = pwd if pwd else '(пустой)'
-                    update_data['account'] = f"{proto}://{user}:{pwd}@{ip}:{port}"
-                    logger.warning(
-                        f"  [!] ДЕФОЛТНЫЕ УЧЁТКИ: {ip}:{port} "
-                        f"({web_auth.get('vendor_matched')}) - "
-                        f"{user}:{pwd_display}"
-                    )
-        
-        # Формируем account из SSH/WinRM если нет web_auth account
-        if 'account' not in update_data:
-            auth_method = update_data.get('auth_method') or host_info.get('auth_method', '')
-            if auth_method == 'ssh':
-                update_data['account'] = f"ssh://{ip}:22"
-            elif auth_method == 'winrm':
-                update_data['account'] = f"winrm://{ip}:5985"
-        
+
         self.storage.update_host(ip, update_data)
         
         logger.info(f"  OS: {update_data.get('os')}, Type: {update_data.get('type')}, "
