@@ -309,11 +309,18 @@ class ReportGenerator:
             logger.error(f"Failed to load HTML template: {e}")
             return
         
+        # Build type summary
+        from collections import Counter
+        type_counts = Counter(h.get('type', 'unknown') or 'unknown' for h in hosts)
+        type_summary_parts = [f'{t}: {c}' for t, c in sorted(type_counts.items())]
+        type_summary_html = ' &nbsp;|&nbsp; '.join(type_summary_parts)
+
         # Fill template
         html_content = template.format(
             timestamp=escape_value(timestamp),
             table_rows=''.join(table_rows),
-            total_hosts=len(hosts)
+            total_hosts=len(hosts),
+            type_summary=type_summary_html
         )
         
         # Write to file

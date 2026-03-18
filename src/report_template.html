@@ -12,31 +12,25 @@
         }}
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f5f5f5;
-            padding: 20px;
-        }}
-        header {{
-            background-color: #2c3e50;
-            color: white;
-            padding: 30px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        header h1 {{
-            font-size: 28px;
-            margin-bottom: 10px;
-        }}
-        header p {{
-            font-size: 14px;
-            opacity: 0.9;
-        }}
-        main {{
             background-color: white;
             padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             overflow-x: auto;
+        }}
+        .report-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            margin-bottom: 10px;
+            border-bottom: 2px solid #34495e;
+        }}
+        .report-header h1 {{
+            font-size: 18px;
+            color: #2c3e50;
+        }}
+        .report-header span {{
+            font-size: 14px;
+            color: #666;
         }}
         table {{
             width: 100%;
@@ -86,23 +80,44 @@
         .default-creds-found td {{
             color: #721c24;
         }}
-        footer {{
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #ecf0f1;
-            border-radius: 8px;
+        /* Filter row styles */
+        .filter-row th {{
+            padding: 6px 4px;
+            background-color: #3d566e;
+        }}
+        .filter-row select,
+        .filter-row input {{
+            width: 100%;
+            padding: 4px 6px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            font-size: 12px;
+            font-family: inherit;
+        }}
+        .filter-row select {{
+            cursor: pointer;
+        }}
+        .filter-row input::placeholder {{
+            color: #aaa;
+        }}
+
+
+        .report-footer {{
+            margin-top: 10px;
+            padding: 10px 0;
+            border-top: 1px solid #ddd;
             text-align: center;
             color: #555;
+            font-size: 13px;
         }}
         @media (max-width: 768px) {{
             body {{
                 padding: 10px;
             }}
-            header {{
-                padding: 20px;
-            }}
-            header h1 {{
-                font-size: 22px;
+            .report-header {{
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 4px;
             }}
             th, td {{
                 padding: 8px;
@@ -112,12 +127,11 @@
     </style>
 </head>
 <body>
-    <header>
-        <h1>Network Scan Report</h1>
-        <p>Generated: {timestamp}</p>
-    </header>
-    <main>
-        <table>
+        <div class="report-header">
+            <h1>Network Scan Report</h1>
+            <span>Generated: {timestamp} &nbsp;|&nbsp; Показано: <span id="visible-count">{total_hosts}</span> из {total_hosts}</span>
+        </div>
+        <table id="scan-table">
             <thead>
                 <tr>
                     <th>IP Address</th>
@@ -134,14 +148,88 @@
                     <th>Services</th>
                     <th>Last Updated</th>
                 </tr>
+                <tr class="filter-row">
+                    <th><input type="text" data-col="0" placeholder="Filter..."></th>
+                    <th><input type="text" data-col="1" placeholder="Filter..."></th>
+                    <th><select data-col="2"><option value="">All</option></select></th>
+                    <th><select data-col="3"><option value="">All</option></select></th>
+                    <th><input type="text" data-col="4" placeholder="Filter..."></th>
+                    <th><select data-col="5"><option value="">All</option></select></th>
+                    <th><input type="text" data-col="6" placeholder="Filter..."></th>
+                    <th><input type="text" data-col="7" placeholder="Filter..."></th>
+                    <th><select data-col="8"><option value="">All</option></select></th>
+                    <th><select data-col="9"><option value="">All</option></select></th>
+                    <th><input type="text" data-col="10" placeholder="Filter..."></th>
+                    <th><input type="text" data-col="11" placeholder="Filter..."></th>
+                    <th><input type="text" data-col="12" placeholder="Filter..."></th>
+                </tr>
             </thead>
             <tbody>
 {table_rows}
             </tbody>
         </table>
-    </main>
-    <footer>
-        <p>Total hosts: {total_hosts}</p>
-    </footer>
+    <div class="report-footer">Total hosts: {total_hosts} &nbsp;|&nbsp; {type_summary}</div>
+    <script>
+    (function() {{
+        var table = document.getElementById('scan-table');
+        var tbody = table.querySelector('tbody');
+        var rows = tbody.querySelectorAll('tr');
+        var filterRow = table.querySelector('.filter-row');
+        var selects = filterRow.querySelectorAll('select');
+        var inputs = filterRow.querySelectorAll('input, select');
+        var visibleCount = document.getElementById('visible-count');
+
+        // Populate select options from data
+        selects.forEach(function(sel) {{
+            var col = parseInt(sel.getAttribute('data-col'));
+            var values = new Set();
+            rows.forEach(function(row) {{
+                var cell = row.cells[col];
+                if (cell) {{
+                    var text = cell.textContent.trim();
+                    if (text) values.add(text);
+                }}
+            }});
+            Array.from(values).sort().forEach(function(v) {{
+                var opt = document.createElement('option');
+                opt.value = v;
+                opt.textContent = v;
+                sel.appendChild(opt);
+            }});
+        }});
+
+        function applyFilters() {{
+            var filters = {{}};
+            inputs.forEach(function(el) {{
+                var col = parseInt(el.getAttribute('data-col'));
+                var val = el.value.trim().toLowerCase();
+                if (val) filters[col] = {{ value: val, isSelect: el.tagName === 'SELECT' }};
+            }});
+
+            var count = 0;
+            rows.forEach(function(row) {{
+                var show = true;
+                for (var col in filters) {{
+                    var cell = row.cells[col];
+                    if (!cell) {{ show = false; break; }}
+                    var text = cell.textContent.trim().toLowerCase();
+                    var f = filters[col];
+                    if (f.isSelect) {{
+                        if (text !== f.value) {{ show = false; break; }}
+                    }} else {{
+                        if (text.indexOf(f.value) === -1) {{ show = false; break; }}
+                    }}
+                }}
+                row.style.display = show ? '' : 'none';
+                if (show) count++;
+            }});
+            visibleCount.textContent = count;
+        }}
+
+        inputs.forEach(function(el) {{
+            el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', applyFilters);
+        }});
+    }})();
+    </script>
 </body>
 </html>
