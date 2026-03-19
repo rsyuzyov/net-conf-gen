@@ -1,4 +1,5 @@
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .credentials import CredentialManager
@@ -453,11 +454,26 @@ class ConnectionChecker:
                 os_str = os_str.replace('Майкрософт', 'Microsoft')
                 result['os'] = os_str
             
+            # Кракозябры в начале ("?????????? Windows 10 Pro") → "Microsoft Windows 10 Pro"
+            if re.match(r'^\?{3,}\s+', os_str):
+                os_str = re.sub(r'^\?+\s*', 'Microsoft ', os_str)
+                result['os'] = os_str
+            
             # Windows Server → server
             if 'windows' in os_str.lower():
                 result['os_type'] = 'windows'
                 if 'server' in os_str.lower():
                     result['type'] = 'server'
+        
+        # Уточнение type для Windows: server vs workstation по портам и hostname
+        if result.get('os_type') == 'windows' and result.get('type') == 'workstation':
+            hostname = result.get('hostname', '')
+            # Серверные порты
+            server_indicators = {88, 389, 636, 1540, 1541, 1560, 1561, 2049, 5985}
+            if server_indicators & set(open_ports):
+                result['type'] = 'server'
+            elif hostname and hostname.lower().startswith('srv-'):
+                result['type'] = 'server'
         
         self.storage.update_host(ip, result)
         logger.info(f"{ip}: Проверка завершена. Статус: {result['deep_scan_status']}, "

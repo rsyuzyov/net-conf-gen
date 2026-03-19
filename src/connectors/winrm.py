@@ -9,6 +9,20 @@ from . import BaseConnector
 
 logger = logging.getLogger(__name__)
 
+def _decode_output(data: bytes) -> str:
+    """Декодирует вывод WinRM: пробует UTF-8 (с BOM) → cp1251 → cp866 → latin-1."""
+    if not data:
+        return ''
+    # Удаляем BOM если есть
+    if data.startswith(b'\xef\xbb\xbf'):
+        data = data[3:]
+    for enc in ('utf-8', 'cp1251', 'cp866', 'latin-1'):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode('utf-8', errors='replace')
+
 # Suppress noisy errors from the library
 logging.getLogger('winrm').setLevel(logging.CRITICAL)
 logging.getLogger('requests_kerberos').setLevel(logging.CRITICAL)
@@ -176,22 +190,22 @@ class WinRMConnector(BaseConnector):
         # hostname
         result = session.run_cmd('hostname')
         if result.status_code == 0:
-            os_info['hostname'] = result.std_out.decode().strip()
+            os_info['hostname'] = _decode_output(result.std_out).strip()
         
         # OS
         result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Caption')
         if result.status_code == 0:
-            os_info['os'] = result.std_out.decode().strip()
+            os_info['os'] = _decode_output(result.std_out).strip()
         
         # Версия
         result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
         if result.status_code == 0:
-            os_info['kernel_version'] = result.std_out.decode().strip()
+            os_info['kernel_version'] = _decode_output(result.std_out).strip()
         
         # MAC
         result = session.run_ps('(Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1).MacAddress')
         if result.status_code == 0:
-            mac = result.std_out.decode().strip()
+            mac = _decode_output(result.std_out).strip()
             if mac:
                 os_info['mac'] = mac.replace('-', ':')
         
@@ -200,7 +214,7 @@ class WinRMConnector(BaseConnector):
             result = session.run_cmd('getmac /v /fo csv | findstr /V "disabled"')
             if result.status_code == 0:
                 import re
-                mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', result.std_out.decode())
+                mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', _decode_output(result.std_out))
                 if mac_match:
                     os_info['mac'] = mac_match.group(0).replace('-', ':')
         

@@ -45,8 +45,20 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
 
+    # 1. Load Config (до настройки логирования, чтобы получить domain)
+    config = load_config(args.config)
+    targets = config.get('targets', [])
+
+    # Определяем domain и пути на основе конфига
+    domain = config.get('domain', '')
+    if domain:
+        output_dir = os.path.join('output', domain)
+        log_dir = os.path.join('log', domain)
+    else:
+        output_dir = 'output'
+        log_dir = 'log'
+
     # Setup log directory and file
-    log_dir = 'log'
     os.makedirs(log_dir, exist_ok=True)
     cleanup_old_logs(log_dir, max_age_days=30)
     log_filename = os.path.join(log_dir, f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
@@ -65,16 +77,16 @@ def main():
     logging.getLogger('pypsexec').setLevel(logging.WARNING)
     logging.getLogger('smbprotocol').setLevel(logging.WARNING)
 
-    # Initialize Storage early
-    from src.storage import Storage
-    storage = Storage()
-
-    # 1. Load Config
-    config = load_config(args.config)
-    targets = config.get('targets', [])
     if not targets and not args.host:
         logger.error("No targets specified in config.")
         sys.exit(1)
+
+    logger.info(f"Domain: {domain}")
+    logger.info(f"Output directory: {output_dir}")
+
+    # Initialize Storage
+    from src.storage import Storage
+    storage = Storage(output_dir=output_dir)
 
     # 2. Discovery Stage (включает сканирование портов)
     hosts = []
@@ -157,7 +169,7 @@ def main():
     if args.step in ['report', 'all']:
         from src.reporting import ReportGenerator
         logger.info("=== Stage 4: Reporting ===")
-        reporter = ReportGenerator(storage)
+        reporter = ReportGenerator(storage, output_dir=output_dir)
         reporter.generate_all()
 
 if __name__ == "__main__":

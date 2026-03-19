@@ -82,7 +82,7 @@ class SSHConnector(BaseConnector):
                 'hostname': os_info.get('hostname', ''),
                 'os': os_info.get('distribution', os_info.get('os', 'Linux')),
                 'os_type': 'linux',
-                'type': 'server',
+                # type НЕ устанавливаем — его определяет fingerprint, коннектор не должен перезаписывать
                 'user': user,
                 'mac': os_info.get('mac', ''),
                 'kernel_version': os_info.get('kernel_version', ''),

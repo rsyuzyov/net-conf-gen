@@ -428,6 +428,13 @@ class Fingerprinter:
         if model:
             update_data['model'] = model
 
+    # ===== Helper: get stored hostname =====
+    def _get_stored_hostname(self, ip):
+        """Получить hostname из storage (если уже известен)."""
+        if self.storage:
+            return self.storage.get_host(ip).get('hostname', '')
+        return ''
+
     # ===== Reverse DNS =====
     def _reverse_dns(self, ip):
         """Получить hostname через reverse DNS."""
@@ -532,7 +539,7 @@ class Fingerprinter:
                 return ""
 
     # ===== Port-based Detection =====
-    def _detect_by_ports(self, open_ports):
+    def _detect_by_ports(self, open_ports, hostname=''):
         """Определение типа устройства по характерным комбинациям портов."""
         if not open_ports:
             return None
@@ -547,13 +554,10 @@ class Fingerprinter:
         if 8291 in ports and 9100 not in ports:
             return {'os': 'MikroTik RouterOS', 'os_type': 'linux', 'type': 'mikrotik'}
 
-        # WinRM (5985) = 100% Windows
-        if 5985 in ports:
-            return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
-
-        # RPC (135) = Windows
-        if 135 in ports:
-            return {'os': 'Windows', 'os_type': 'windows', 'type': 'workstation'}
+        # WinRM (5985) или RPC (135) = Windows
+        if ports & {5985, 135}:
+            win_type = self._classify_windows_type(hostname, open_ports)
+            return {'os': 'Windows', 'os_type': 'windows', 'type': win_type}
 
         # Kerio Control: порт 4081 (админка) или 4040
         if ports & {4081, 4040}:
@@ -782,7 +786,7 @@ class Fingerprinter:
         # NanoKVM (KVM-over-IP устройство, не сервер)
         if 'nanokvm' in all_titles:
             update_data['type'] = 'network'
-            update_data['os'] = 'Linux/Unix'
+            update_data['os'] = 'NanoKVM'
             update_data.setdefault('vendor', 'Sipeed')
             update_data['model'] = 'NanoKVM'
             logger.info(f"  Classified via deep analysis: NanoKVM")
@@ -960,7 +964,7 @@ class Fingerprinter:
 
                     if 'nginx' in server_lower or 'apache' in server_lower:
                         if 'win64' in server_lower or 'win32' in server_lower:
-                            result['os'] = f'Windows ({server})'
+                            result['os'] = 'Windows'
                             result['os_type'] = 'windows'
                         else:
                             result['os'] = f'Linux ({server})'
@@ -968,7 +972,7 @@ class Fingerprinter:
                         result['type'] = 'server'
                         return result
                     elif 'iis' in server_lower or 'microsoft' in server_lower:
-                        result['os'] = f'Windows ({server})'
+                        result['os'] = 'Windows'
                         result['os_type'] = 'windows'
                         result['type'] = 'server'
                         return result
@@ -1034,7 +1038,7 @@ class Fingerprinter:
 
         # 1. Port-based pre-detection (высокая достоверность)
         if open_ports:
-            port_info = self._detect_by_ports(open_ports)
+            port_info = self._detect_by_ports(open_ports, hostname=self._get_stored_hostname(ip))
             if port_info:
                 result.update(port_info)
                 result['confidence'] = 'high'
@@ -1203,11 +1207,19 @@ class Fingerprinter:
         if not has_connection and not high_confidence:
             self._deep_port_analysis(ip, open_ports, update_data)
         else:
-            # Для определённых хостов — только HTTP title с порта 80 (быстро)
-            if open_ports and 80 in open_ports:
-                title = self._get_http_title(ip, port=80, timeout=3)
+            # Для определённых хостов — HTTP title с основных портов + классификация
+            http_titles = {}
+            for port in sorted(set(open_ports or []) & self.HTTP_PORTS):
+                title = self._get_http_title(ip, port=port, timeout=3)
                 if title:
-                    update_data['http_title'] = title
+                    http_titles[port] = title
+            if http_titles:
+                update_data['http_titles'] = http_titles
+                if not update_data.get('http_title'):
+                    primary_port = 80 if 80 in http_titles else min(http_titles.keys())
+                    update_data['http_title'] = http_titles[primary_port]
+                # Классификация по title (напр. NanoKVM, Proxmox)
+                self._classify_from_deep_analysis(update_data, http_titles, {}, {})
 
         # SSL cert → hostname и уточнение ОС
         ssl_cert = update_data.get('ssl_cert', {})
@@ -1361,7 +1373,7 @@ class Fingerprinter:
                     if snmp_os.get('type'):
                         update_data['type'] = snmp_os['type']
                     logger.info(f"  OS via SNMP: {snmp_os.get('os')}")
-                elif snmp_os.get('type') and update_data.get('type') in ('server', 'workstation', None):
+                elif snmp_os.get('type') and update_data.get('type') in ('server', 'workstation', None) and update_data.get('model') != 'NanoKVM':
                     # Уточняем type если SNMP даёт более конкретный (camera, printer, mikrotik...)
                     if snmp_os['type'] in ('camera', 'printer', 'mikrotik', 'network'):
                         update_data['type'] = snmp_os['type']
