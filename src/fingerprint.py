@@ -785,7 +785,7 @@ class Fingerprinter:
         
         # NanoKVM (KVM-over-IP устройство, не сервер)
         if 'nanokvm' in all_titles:
-            update_data['type'] = 'network'
+            update_data['type'] = 'ipkvm'
             update_data['os'] = 'NanoKVM'
             update_data.setdefault('vendor', 'Sipeed')
             update_data['model'] = 'NanoKVM'
