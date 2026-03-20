@@ -169,7 +169,7 @@ def main():
     if args.step in ['report', 'all']:
         from src.reporting import ReportGenerator
         logger.info("=== Stage 4: Reporting ===")
-        reporter = ReportGenerator(storage, output_dir=output_dir)
+        reporter = ReportGenerator(storage, output_dir=output_dir, domain=domain, targets=targets)
         reporter.generate_all()
 
 if __name__ == "__main__":

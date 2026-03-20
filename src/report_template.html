@@ -51,6 +51,13 @@
             padding: 10px 12px;
             border: 1px solid #ddd;
         }}
+        td a {{
+            color: #2980b9;
+            text-decoration: none;
+        }}
+        td a:hover {{
+            text-decoration: underline;
+        }}
         tbody tr:nth-child(even) {{
             background-color: #f9f9f9;
         }}
@@ -128,7 +135,8 @@
 </head>
 <body>
         <div class="report-header">
-            <h1>Network Scan Report</h1>
+            <h1>Network Scan Report — {domain}</h1>
+            <span>{targets}</span>
             <span>Generated: {timestamp} &nbsp;|&nbsp; Показано: <span id="visible-count">{total_hosts}</span> из {total_hosts}</span>
         </div>
         <table id="scan-table">
@@ -169,6 +177,17 @@
             </tbody>
         </table>
     <div class="report-footer">Total hosts: {total_hosts} &nbsp;|&nbsp; {type_summary}</div>
+    <script>
+    function openRdp(ip) {{
+        var content = 'full address:s:' + ip + '\r\nprompt for credentials:i:1\r\nscreen mode id:i:1\r\n';
+        var blob = new Blob([content], {{type: 'application/x-rdp'}});
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = ip + '.rdp';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }}
+    </script>
     <script>
     (function() {{
         var table = document.getElementById('scan-table');

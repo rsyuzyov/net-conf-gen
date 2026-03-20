@@ -10,9 +10,11 @@ from src.utils import ip_to_int
 logger = logging.getLogger(__name__)
 
 class ReportGenerator:
-    def __init__(self, storage, output_dir='output'):
+    def __init__(self, storage, output_dir='output', domain='', targets=None):
         self.storage = storage
         self.output_dir = output_dir
+        self.domain = domain
+        self.targets = targets or []
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -249,6 +251,26 @@ class ReportGenerator:
         """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        # Порты, открываемые в браузере: порт -> протокол
+        WEB_PORTS = {
+            80: 'http', 443: 'https',
+            8080: 'http', 8443: 'https',
+            8006: 'https',  # Proxmox
+            4081: 'https',  # Kerio Admin
+            9090: 'http',   # Prometheus/Cockpit
+            3000: 'http',   # Grafana
+            8291: 'http',   # MikroTik Winbox (web)
+            8728: 'http',   # MikroTik API
+        }
+        
+        # Обратный маппинг: имя сервиса -> порт (для колонки Services)
+        SERVICE_TO_PORT = {
+            'HTTP': 80, 'HTTPS': 443,
+            'HTTP-Alt': 8080, 'HTTPS-Alt': 8443,
+            'Proxmox': 8006, 'Kerio-Admin': 4081,
+            'Prometheus': 9090, 'Grafana': 3000,
+        }
+        
         # Helper function to escape HTML and handle None values
         def escape_value(value):
             if value is None or value == '':
@@ -266,11 +288,65 @@ class ReportGenerator:
                 logger.warning(f"Некорректный формат datetime: {dt_str}, {e}")
                 return str(dt_str)
         
+        def format_ports_html(ip, ports, ssh_user=None):
+            """Форматирует порты, делая веб-порты и SSH кликабельными."""
+            if not ports:
+                return ''
+            if not isinstance(ports, list):
+                return html.escape(str(ports))
+            parts = []
+            for port in sorted(ports):
+                if port == 22 and ssh_user:
+                    ssh_url = f"ssh://{ssh_user}@{ip}"
+                    parts.append(f'<a href="{ssh_url}">{port}</a>')
+                elif port == 3389:
+                    parts.append(f'<a href="javascript:openRdp(\'{ip}\')">{port}</a>')
+                elif port in WEB_PORTS:
+                    proto = WEB_PORTS[port]
+                    if (proto == 'http' and port == 80) or (proto == 'https' and port == 443):
+                        url = f"{proto}://{ip}"
+                    else:
+                        url = f"{proto}://{ip}:{port}"
+                    parts.append(f'<a href="{url}" target="_blank">{port}</a>')
+                else:
+                    parts.append(str(port))
+            return ', '.join(parts)
+        
+        def format_services_html(ip, services, open_ports, ssh_user=None):
+            """Форматирует сервисы, делая веб-сервисы и SSH кликабельными."""
+            if not services:
+                return ''
+            if not isinstance(services, list):
+                return html.escape(str(services))
+            open_ports_set = set(open_ports) if open_ports else set()
+            parts = []
+            for svc in services:
+                if svc == 'SSH' and 22 in open_ports_set and ssh_user:
+                    ssh_url = f"ssh://{ssh_user}@{ip}"
+                    parts.append(f'<a href="{ssh_url}">SSH</a>')
+                elif svc == 'RDP' and 3389 in open_ports_set:
+                    parts.append(f'<a href="javascript:openRdp(\'{ip}\')">RDP</a>')
+                else:
+                    port = SERVICE_TO_PORT.get(svc)
+                    if port and port in open_ports_set and port in WEB_PORTS:
+                        proto = WEB_PORTS[port]
+                        if (proto == 'http' and port == 80) or (proto == 'https' and port == 443):
+                            url = f"{proto}://{ip}"
+                        else:
+                            url = f"{proto}://{ip}:{port}"
+                        parts.append(f'<a href="{url}" target="_blank">{html.escape(svc)}</a>')
+                    else:
+                        parts.append(html.escape(svc))
+            return ', '.join(parts)
+        
         # Build table rows
         table_rows = []
         for host in hosts:
             os_type = host.get('os_type', '')
             deep_scan_status = host.get('deep_scan_status', '')
+            ip = host.get('ip', '')
+            user = host.get('user', '')
+            auth_method = host.get('auth_method', '')
             
             # Determine CSS class for host type
             type_class = f"host-{os_type}"
@@ -280,7 +356,18 @@ class ReportGenerator:
             if deep_scan_status == 'completed':
                 row_class += " deep-scan-completed"
             
-
+            ports_html = format_ports_html(ip, host.get('open_ports'), ssh_user=user)
+            services_html = format_services_html(ip, host.get('services'), host.get('open_ports'), ssh_user=user)
+            
+            # Auth method: делаем SSH и RDP кликабельными
+            open_ports = host.get('open_ports', [])
+            if auth_method == 'ssh' and user:
+                ssh_url = f"ssh://{user}@{ip}"
+                auth_html = f'<a href="{ssh_url}">{html.escape(auth_method)}</a>'
+            elif auth_method in ('winrm', 'psexec') and 3389 in (open_ports or []):
+                auth_html = f'<a href="javascript:openRdp(\'{ip}\')">{html.escape(auth_method)}</a>'
+            else:
+                auth_html = escape_value(auth_method)
             
             row = f"""                <tr class="{row_class}">
                     <td>{escape_value(host.get('ip'))}</td>
@@ -292,9 +379,9 @@ class ReportGenerator:
                     <td>{escape_value(host.get('model'))}</td>
                     <td>{escape_value(host.get('mac'))}</td>
                     <td>{escape_value(host.get('deep_scan_status'))}</td>
-                    <td>{escape_value(host.get('auth_method'))}</td>
-                    <td>{escape_value(self._format_ports(host.get('open_ports')))}</td>
-                    <td>{escape_value(self._format_services(host.get('services')))}</td>
+                    <td title="{escape_value(user)}">{auth_html}</td>
+                    <td>{ports_html}</td>
+                    <td>{services_html}</td>
                     <td>{escape_value(format_datetime(host.get('last_updated')))}</td>
                 </tr>
 """
@@ -316,11 +403,14 @@ class ReportGenerator:
         type_summary_html = ' &nbsp;|&nbsp; '.join(type_summary_parts)
 
         # Fill template
+        targets_str = ', '.join(self.targets) if self.targets else ''
         html_content = template.format(
             timestamp=escape_value(timestamp),
             table_rows=''.join(table_rows),
             total_hosts=len(hosts),
-            type_summary=type_summary_html
+            type_summary=type_summary_html,
+            domain=escape_value(self.domain),
+            targets=escape_value(targets_str)
         )
         
         # Write to file
