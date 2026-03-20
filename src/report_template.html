@@ -138,6 +138,7 @@
             <h1>Network Scan Report — {domain}</h1>
             <span>{targets}</span>
             <span>Generated: {timestamp} &nbsp;|&nbsp; Показано: <span id="visible-count">{total_hosts}</span> из {total_hosts}</span>
+            <span>&nbsp;|&nbsp; Адресация: <select id="addr-mode" style="padding:2px 6px;border-radius:4px;border:1px solid #ccc;font-size:13px;"><option value="ip">IP</option><option value="name">Name</option><option value="fqdn">FQDN</option></select></span>
         </div>
         <table id="scan-table">
             <thead>
@@ -178,15 +179,43 @@
         </table>
     <div class="report-footer">Total hosts: {total_hosts} &nbsp;|&nbsp; {type_summary}</div>
     <script>
-    function openRdp(ip) {{
-        var content = 'full address:s:' + ip + '\r\nprompt for credentials:i:1\r\nscreen mode id:i:1\r\n';
+    function openRdp(host) {{
+        var content = 'full address:s:' + host + '\r\nprompt for credentials:i:1\r\nscreen mode id:i:1\r\n';
         var blob = new Blob([content], {{type: 'application/x-rdp'}});
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = ip + '.rdp';
+        a.download = host + '.rdp';
         a.click();
         URL.revokeObjectURL(a.href);
     }}
+
+    function updateLinks() {{
+        var mode = document.getElementById('addr-mode').value;
+        var links = document.querySelectorAll('.host-link');
+        links.forEach(function(el) {{
+            var host = el.getAttribute('data-' + mode);
+            var type = el.getAttribute('data-type');
+            var port = el.getAttribute('data-port');
+            var user = el.getAttribute('data-user');
+            var href = '#';
+            if (type === 'ssh') {{
+                href = 'ssh://' + (user ? user + '@' : '') + host;
+            }} else if (type === 'rdp') {{
+                href = "javascript:openRdp('" + host + "')";
+            }} else if (type === 'http' || type === 'https') {{
+                var defaultPort = (type === 'http') ? '80' : '443';
+                if (port === defaultPort || port === '') {{
+                    href = type + '://' + host;
+                }} else {{
+                    href = type + '://' + host + ':' + port;
+                }}
+            }}
+            el.setAttribute('href', href);
+        }});
+    }}
+
+    document.getElementById('addr-mode').addEventListener('change', updateLinks);
+    document.addEventListener('DOMContentLoaded', updateLinks);
     </script>
     <script>
     (function() {{

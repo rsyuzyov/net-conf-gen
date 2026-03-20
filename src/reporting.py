@@ -288,8 +288,23 @@ class ReportGenerator:
                 logger.warning(f"Некорректный формат datetime: {dt_str}, {e}")
                 return str(dt_str)
         
-        def format_ports_html(ip, ports, ssh_user=None):
-            """Форматирует порты, делая веб-порты и SSH кликабельными."""
+        def make_link(label, link_type, ip, hostname, domain, port='', user='', target=''):
+            """Создаёт ссылку с data-атрибутами для динамического переключения адресации."""
+            fqdn = f"{hostname}.{domain}" if hostname and domain else ip
+            t = f' target="{target}"' if target else ''
+            return (f'<a class="host-link" href="#"'
+                    f' data-ip="{html.escape(ip)}"'
+                    f' data-name="{html.escape(hostname or ip)}"'
+                    f' data-fqdn="{html.escape(fqdn)}"'
+                    f' data-type="{link_type}"'
+                    f' data-port="{port}"'
+                    f' data-user="{html.escape(user)}"'
+                    f'{t}>{label}</a>')
+        
+        domain = self.domain or ''
+        
+        def format_ports_html(ip, hostname, ports, ssh_user=None):
+            """Форматирует порты, делая веб-порты, SSH и RDP кликабельными."""
             if not ports:
                 return ''
             if not isinstance(ports, list):
@@ -297,23 +312,18 @@ class ReportGenerator:
             parts = []
             for port in sorted(ports):
                 if port == 22 and ssh_user:
-                    ssh_url = f"ssh://{ssh_user}@{ip}"
-                    parts.append(f'<a href="{ssh_url}">{port}</a>')
+                    parts.append(make_link(str(port), 'ssh', ip, hostname, domain, user=ssh_user))
                 elif port == 3389:
-                    parts.append(f'<a href="javascript:openRdp(\'{ip}\')">{port}</a>')
+                    parts.append(make_link(str(port), 'rdp', ip, hostname, domain))
                 elif port in WEB_PORTS:
                     proto = WEB_PORTS[port]
-                    if (proto == 'http' and port == 80) or (proto == 'https' and port == 443):
-                        url = f"{proto}://{ip}"
-                    else:
-                        url = f"{proto}://{ip}:{port}"
-                    parts.append(f'<a href="{url}" target="_blank">{port}</a>')
+                    parts.append(make_link(str(port), proto, ip, hostname, domain, port=str(port), target='_blank'))
                 else:
                     parts.append(str(port))
             return ', '.join(parts)
         
-        def format_services_html(ip, services, open_ports, ssh_user=None):
-            """Форматирует сервисы, делая веб-сервисы и SSH кликабельными."""
+        def format_services_html(ip, hostname, services, open_ports, ssh_user=None):
+            """Форматирует сервисы, делая веб-сервисы, SSH и RDP кликабельными."""
             if not services:
                 return ''
             if not isinstance(services, list):
@@ -322,19 +332,14 @@ class ReportGenerator:
             parts = []
             for svc in services:
                 if svc == 'SSH' and 22 in open_ports_set and ssh_user:
-                    ssh_url = f"ssh://{ssh_user}@{ip}"
-                    parts.append(f'<a href="{ssh_url}">SSH</a>')
+                    parts.append(make_link('SSH', 'ssh', ip, hostname, domain, user=ssh_user))
                 elif svc == 'RDP' and 3389 in open_ports_set:
-                    parts.append(f'<a href="javascript:openRdp(\'{ip}\')">RDP</a>')
+                    parts.append(make_link('RDP', 'rdp', ip, hostname, domain))
                 else:
                     port = SERVICE_TO_PORT.get(svc)
                     if port and port in open_ports_set and port in WEB_PORTS:
                         proto = WEB_PORTS[port]
-                        if (proto == 'http' and port == 80) or (proto == 'https' and port == 443):
-                            url = f"{proto}://{ip}"
-                        else:
-                            url = f"{proto}://{ip}:{port}"
-                        parts.append(f'<a href="{url}" target="_blank">{html.escape(svc)}</a>')
+                        parts.append(make_link(html.escape(svc), proto, ip, hostname, domain, port=str(port), target='_blank'))
                     else:
                         parts.append(html.escape(svc))
             return ', '.join(parts)
@@ -345,6 +350,7 @@ class ReportGenerator:
             os_type = host.get('os_type', '')
             deep_scan_status = host.get('deep_scan_status', '')
             ip = host.get('ip', '')
+            hostname = host.get('hostname', '')
             user = host.get('user', '')
             auth_method = host.get('auth_method', '')
             
@@ -356,16 +362,15 @@ class ReportGenerator:
             if deep_scan_status == 'completed':
                 row_class += " deep-scan-completed"
             
-            ports_html = format_ports_html(ip, host.get('open_ports'), ssh_user=user)
-            services_html = format_services_html(ip, host.get('services'), host.get('open_ports'), ssh_user=user)
+            ports_html = format_ports_html(ip, hostname, host.get('open_ports'), ssh_user=user)
+            services_html = format_services_html(ip, hostname, host.get('services'), host.get('open_ports'), ssh_user=user)
             
             # Auth method: делаем SSH и RDP кликабельными
             open_ports = host.get('open_ports', [])
             if auth_method == 'ssh' and user:
-                ssh_url = f"ssh://{user}@{ip}"
-                auth_html = f'<a href="{ssh_url}">{html.escape(auth_method)}</a>'
+                auth_html = make_link(html.escape(auth_method), 'ssh', ip, hostname, domain, user=user)
             elif auth_method in ('winrm', 'psexec') and 3389 in (open_ports or []):
-                auth_html = f'<a href="javascript:openRdp(\'{ip}\')">{html.escape(auth_method)}</a>'
+                auth_html = make_link(html.escape(auth_method), 'rdp', ip, hostname, domain)
             else:
                 auth_html = escape_value(auth_method)
             
