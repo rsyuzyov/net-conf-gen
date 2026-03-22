@@ -644,6 +644,11 @@ class HostScanner:
         if not update_data.get('type'):
             update_data['type'] = 'unknown'
 
+        # Если хост был классифицирован как server/workstation (обычно по TTL), но не имеет открытых TCP портов (только ICMP/ARP),
+        # то это скорее всего мобильное устройство, телевизор или IoT. Сервер/ПК без портов - это unknown.
+        if update_data.get('type') in ('server', 'workstation') and not open_ports:
+            update_data['type'] = 'unknown'
+
         # Vendor/model (единый вызов)
         determine_vendor_model(update_data, host_info)
 

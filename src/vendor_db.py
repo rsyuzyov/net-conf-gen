@@ -80,6 +80,7 @@ CAMERA_TITLE_KEYWORDS = {
     'xmeye': ('XMEye', 'DVR/NVR'),
     'surveillance': (None, None),
     'onvif': (None, None),
+    'domination': ('Domination', 'NVR'),
 }
 
 # ===== Printer hostname prefixes =====
