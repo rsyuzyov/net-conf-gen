@@ -538,6 +538,13 @@ class HostScanner:
             update_data.setdefault('vendor', 'QNAP')
             return
 
+        # Managed Switch
+        if 'switch web management' in all_titles:
+            update_data['type'] = 'network'
+            update_data['os'] = 'Network Equipment'
+            update_data.setdefault('model', 'Managed Switch')
+            return
+
         # UniFi
         if 'unifi' in all_titles or 'ubiquiti' in all_titles:
             update_data.setdefault('vendor', 'Ubiquiti')
@@ -557,7 +564,7 @@ class HostScanner:
         if 'scan_status' not in update_data:
             if update_data.get('auth_methods'):
                 update_data['scan_status'] = 'auth_available_no_access'
-            elif category in ('printer', 'camera', 'network', 'mikrotik'):
+            elif category in ('printer', 'camera', 'network', 'mikrotik', 'ipkvm'):
                 update_data['scan_status'] = 'scanned'
             else:
                 update_data['scan_status'] = 'scanned_no_access'
@@ -581,8 +588,15 @@ class HostScanner:
             if cam_model:
                 update_data.setdefault('model', cam_model)
 
-        # Windows: уточнение server vs workstation
+        # NanoKVM / IP-KVM через SSH (OS=Buildroot — прошивка NanoKVM)
         os_str = update_data.get('os', '')
+        if 'buildroot' in os_str.lower():
+            update_data['type'] = 'ipkvm'
+            update_data['os'] = update_data.get('os') or 'NanoKVM'
+            update_data.setdefault('vendor', 'Sipeed')
+            update_data.setdefault('model', 'NanoKVM')
+
+        # Windows: уточнение server vs workstation
         is_windows = (
             update_data.get('os_type') == 'windows'
             or ('windows' in os_str.lower() and {135, 445} & set(open_ports))
@@ -625,6 +639,10 @@ class HostScanner:
             }
             if category in type_map:
                 update_data['type'] = type_map[category]
+
+        # Финальный fallback: type не должен быть None
+        if not update_data.get('type'):
+            update_data['type'] = 'unknown'
 
         # Vendor/model (единый вызов)
         determine_vendor_model(update_data, host_info)
