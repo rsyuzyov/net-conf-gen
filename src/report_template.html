@@ -76,9 +76,15 @@
         .host-unknown {{
             border-left: 4px solid #9e9e9e;
         }}
-        .deep-scan-completed {{
+        .scan-completed {{
             background-color: #d4edda !important;
             font-weight: 600;
+        }}
+        .scan-discovered {{
+            background-color: #eef5ff !important;
+        }}
+        .scan-auth-available-no-access {{
+            background-color: #fff8e1 !important;
         }}
         .default-creds-found {{
             background-color: #f8d7da !important;
@@ -151,7 +157,7 @@
                     <th>Vendor</th>
                     <th>Model</th>
                     <th>MAC Address</th>
-                    <th>Deep Scan Status</th>
+                    <th>Scan Status</th>
                     <th>Auth Method</th>
                     <th>Open Ports</th>
                     <th>Services</th>

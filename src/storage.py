@@ -4,6 +4,7 @@ import os
 import logging
 import threading
 from datetime import datetime
+from src.models import HostRecord
 from src.utils import ip_to_int
 
 logger = logging.getLogger(__name__)
@@ -65,8 +66,54 @@ class Storage:
             self.data[ip]['last_updated'] = datetime.now().isoformat()
             self._dirty = True
 
+    def update_host_record(self, record):
+        self.update_host(record.ip, record.to_dict())
+
+    def replace_discovery_snapshot(self, records):
+        """Заменяет текущий state свежим discovery snapshot.
+
+        Сетевые факты берутся только из последнего discovery. Из старого state
+        сохраняются только результаты authenticated enrichment, чтобы этап scan
+        мог работать инкрементально без смешивания устаревших discovery-данных.
+        """
+        preserved_fields = {
+            'auth_methods',
+            'auth_attempts',
+            'auth_method',
+            'user',
+            'key_path',
+            'kernel_version',
+            'distribution',
+            'success',
+        }
+
+        with self._lock:
+            existing = self.data
+            new_data = {}
+            for record in records:
+                base = record.to_dict()
+                previous = existing.get(record.ip, {})
+                for field in preserved_fields:
+                    if field in previous and previous[field] not in (None, '', [], {}):
+                        base[field] = previous[field]
+                new_data[record.ip] = base
+                new_data[record.ip]['last_updated'] = datetime.now().isoformat()
+
+            self.data = new_data
+            self._dirty = True
+
     def get_host(self, ip):
         return self.data.get(ip, {})
+
+    def get_host_record(self, ip):
+        host = self.get_host(ip)
+        if not host:
+            return None
+        return HostRecord.from_dict(host)
+
+    def iter_host_records(self):
+        for ip in sorted(self.data.keys(), key=ip_to_int):
+            yield HostRecord.from_dict(self.data[ip])
 
     def clear(self):
         """Очистить все данные."""

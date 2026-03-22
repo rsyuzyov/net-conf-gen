@@ -1,58 +1,105 @@
 # net-conf-gen
 
-Инструмент ищет активные хосты в сети, классифицирует их и формирует конфиги и отчеты:
+`net-conf-gen` строит сетевой инвентарь в три этапа: сначала делает discovery, затем при необходимости выполняет authenticated enrichment через SSH/WinRM/PsExec и в конце генерирует артефакты для эксплуатации.
 
-- ansible inventory
-- ssh_config
-- файл hosts.txt
-- детальные отчеты в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report.html), csv, json
+Результат:
+
+- `inventory.yaml` для Ansible
+- `ssh_config`
+- `hosts.txt`
+- отчеты в `html`, `csv`, `json`, `yaml`
+
+## Архитектура
+
+Текущий pipeline состоит из трех этапов:
+
+1. `discovery`: быстрый native TCP/ARP discovery по целевым портам с первичной классификацией хостов
+2. `scan`: optional authenticated enrichment через SSH/WinRM/PsExec
+3. `report`: генерация inventory, `ssh_config` и отчетов из `scan_state.json`
+
+Главный runtime-state хранится в `output/<domain>/scan_state.json`.
+
+Схема и точная семантика полей описаны в [docs/scan_state_schema.md](./docs/scan_state_schema.md).
+
+## Требования
+
+- Python 3.12+
+- сетевой доступ к целевым подсетям
 
 ## Установка
 
-Установка зависимостей на linux:
+Linux:
 
 ```bash
 chmod +x ./install.sh && ./install.sh
 ```
 
-Установка python (если не установлен) и зависимостей на windows:
+Windows:
 
 ```batch
 ./install.bat
 ```
 
+## Конфиг
+
+Базовый шаблон: [config.example.yaml](./config.example.yaml)
+
+Ключевые поля:
+
+- `targets`: список подсетей или адресов для сканирования
+- `exclusions`: IP-адреса, которые нужно исключить из discovery
+- `ports_file`: JSON с перечнем целевых портов и их display-именами
+- `credentials`: учётные данные для этапа authenticated enrichment
+- `concurrency`: параллелизм authenticated enrichment
+
+При первом запуске без `config.yaml` запускается интерактивный wizard.
+
 ## Использование
+
+Полный запуск:
 
 ```bash
 python main.py
 ```
 
-При первом запуске скрипт предложит сгенерировать конфиг (./config.yaml) - отвечаем на вопросы.  
-Для прекращения ввод списка просто нажимаем Enter.  
-Если где-то ошиблись - потом можно отредактировать конечный конфиг вручную.  
-Можно заранее создать руками копированием из [config.example.yaml](./config.example.yaml)  
-Далее утилита создаст ./output/scan_state.json - главный файл, дополняемый на каждом этапе работы  
-После окончания работы берем данные в подходящем формате в ./output  
-Пример отчета в формате [html](https://htmlpreview.github.io/?https://github.com/rsyuzyov/net-conf-gen/blob/main/docs/scan_report.html)
-
-Варианты запуска:
+Покомпонентно:
 
 ```bash
 # Справка
 python main.py --help
 
-# Только обнаружение списка хостов (быстро)
+# Только discovery
 python main.py --step discovery
 
-# Только проверка подключений (требует результаты discovery или config)
-python main.py --step connection-check
-
-# Только фингерпринтинг (требует результаты discovery или config)
-python main.py --step fingerprint
+# Только authenticated enrichment
+python main.py --step scan
 
 # Только генерация отчетов
 python main.py --step report
 
-# Принудительное сканирование одного хоста
+# Один хост
 python main.py --host 10.0.0.1 --force --debug
 ```
+
+## Smoke Check
+
+Быстрая проверка после установки:
+
+```bash
+python -m unittest discover -s tests -v
+python main.py --config config.yaml --step discovery --host 10.0.0.1 --debug
+python main.py --config config.yaml --step report
+```
+
+## Выходные файлы
+
+Для `domain: example.local` артефакты будут созданы в:
+
+- `output/example.local/scan_state.json`
+- `output/example.local/inventory.yaml`
+- `output/example.local/ssh_config`
+- `output/example.local/scan_report.html`
+- `output/example.local/scan_report.csv`
+- `output/example.local/scan_report.json`
+
+Пример HTML-отчета: [docs/scan_report.html](./docs/scan_report.html)

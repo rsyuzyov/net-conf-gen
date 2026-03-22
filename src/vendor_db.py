@@ -1,15 +1,7 @@
-"""База данных vendor/model и логика определения.
-
-Одна точка правды для всех маппингов vendor → normalized name,
-HTTP title → vendor/model, hostname → type, etc.
-"""
+"""Нормализация vendor/model для нового nmap-centered pipeline."""
 import re
-import logging
 
 from src.os_detection import linux_distro_from_kernel, windows_name_from_kernel
-
-logger = logging.getLogger(__name__)
-
 
 # ===== MAC vendor → нормализованный vendor =====
 MAC_VENDOR_MAP = {
@@ -44,6 +36,36 @@ MAC_VENDOR_MAP = {
     'dahua': 'Dahua',
 }
 
+# ===== Text patterns → normalized vendor =====
+TEXT_VENDOR_PATTERNS = {
+    'mikrotik': 'MikroTik',
+    'routeros': 'MikroTik',
+    'tp-link': 'TP-Link',
+    'openwrt': 'OpenWrt',
+    'ubiquiti': 'Ubiquiti',
+    'hikvision': 'Hikvision',
+    'dahua': 'Dahua',
+    'canon': 'Canon',
+    'kyocera': 'Kyocera',
+    'xerox': 'Xerox',
+    'ricoh': 'Ricoh',
+    'brother': 'Brother',
+    'konica': 'Konica Minolta',
+    'synology': 'Synology',
+    'qnap': 'QNAP',
+    'proxmox': 'Proxmox',
+    'cisco': 'Cisco',
+    'kerio': 'Kerio',
+    'xiaomi': 'Xiaomi',
+}
+
+# ===== IOT / Mobile Vendors that should not be classified as servers =====
+IOT_VENDORS = {
+    'Xiaomi', 'Dreame', 'Samsung', 'Apple', 'Oppo', 'Vivo', 'Huawei',
+    'Realme', 'OnePlus', 'Google', 'Amazon', 'Nintendo', 'Sony', 'Lg',
+    'Motorola', 'Tuya', 'Espressif', 'Roku', 'Sonos'
+}
+
 # ===== HTTP title keywords → (vendor, model) =====
 HTTP_TITLE_VENDOR_MAP = {
     'laserjet': ('HP', None),
@@ -66,35 +88,8 @@ HTTP_TITLE_VENDOR_MAP = {
     'kerio': ('Kerio', None),
 }
 
-# ===== Camera title keywords → (vendor, model) =====
-CAMERA_TITLE_KEYWORDS = {
-    'netsurveillance': ('XMEye', 'NETSurveillance DVR/NVR'),
-    'webpackspa': ('Hikvision', 'IP Camera'),
-    'web viewer': ('Samsung/Hanwha', 'IP Camera'),
-    'hikvision': ('Hikvision', 'IP Camera'),
-    'dahua': ('Dahua', 'IP Camera'),
-    'ipcamera': (None, 'IP Camera'),
-    'ip camera': (None, 'IP Camera'),
-    'dvr': (None, 'DVR'),
-    'nvr': (None, 'NVR'),
-    'xmeye': ('XMEye', 'DVR/NVR'),
-    'surveillance': (None, None),
-    'onvif': (None, None),
-    'domination': ('Domination', 'NVR'),
-}
-
-# ===== Printer hostname prefixes =====
-PRINTER_HOSTNAME_PREFIXES = ('npi', 'km')
-PRINTER_TITLE_KEYWORDS = ('laserjet', 'canon', 'epson', 'brother', 'xerox', 'ricoh', 'konica', 'lbp')
-
-# ===== Camera ports =====
-CAMERA_PORTS = {554, 8899, 34567}
-
 # ===== Server indicator ports =====
 SERVER_PORTS = {88, 389, 636, 1540, 1541, 1560, 1561, 2049, 5985}
-
-# ===== Network equipment vendors =====
-NETWORK_VENDORS = ('TP-Link', 'ASUS', 'D-Link', 'Netgear', 'Tenda', 'Zyxel')
 
 
 def normalize_mac_vendor(raw_vendor):
@@ -110,6 +105,38 @@ def normalize_mac_vendor(raw_vendor):
         if pattern in vendor_lower:
             return normalized
     return raw_vendor
+
+
+def collect_host_text(host):
+    """Собирает текстовые сигналы хоста в одну строку для эвристик."""
+    chunks = [
+        host.get('vendor', ''),
+        host.get('hostname', ''),
+        host.get('os', ''),
+    ]
+    for details in host.get('service_details', {}).values():
+        chunks.extend([
+            details.get('name', ''),
+            details.get('product', ''),
+            details.get('version', ''),
+            details.get('extrainfo', ''),
+        ])
+        chunks.extend(details.get('scripts', {}).values())
+    chunks.extend(host.get('scripts', {}).values())
+    return ' '.join(str(chunk) for chunk in chunks if chunk).lower()
+
+
+def infer_vendor_from_host(host, text=None):
+    """Определяет normalized vendor по MAC и текстовым сигналам."""
+    vendor = normalize_mac_vendor(host.get('vendor', ''))
+    if vendor:
+        return vendor
+
+    text = text if text is not None else collect_host_text(host)
+    for pattern, normalized in TEXT_VENDOR_PATTERNS.items():
+        if pattern in text:
+            return normalized
+    return ''
 
 
 def classify_windows_type(hostname, open_ports, os_name=''):
@@ -141,41 +168,16 @@ def detect_vendor_from_http_title(title):
     return None, None
 
 
-def detect_camera_from_title(title):
-    """Определяет, является ли устройство камерой по HTTP title.
-
-    Returns:
-        tuple: (is_camera, vendor, model)
-    """
-    if not title:
-        return False, None, None
-    title_lower = title.lower()
-    vendor = None
-    model = None
-    is_camera = False
-    for kw, (v, m) in CAMERA_TITLE_KEYWORDS.items():
-        if kw in title_lower:
-            is_camera = True
-            if v and not vendor:
-                vendor = v
-            if m and not model:
-                model = m
-    return is_camera, vendor, model
-
-
-def is_printer_by_hostname(hostname):
-    """Определяет, является ли устройство принтером по hostname."""
-    if not hostname:
-        return False
-    return hostname.lower().startswith(PRINTER_HOSTNAME_PREFIXES)
-
-
-def is_printer_by_title(title):
-    """Определяет, является ли устройство принтером по HTTP title."""
-    if not title:
-        return False
-    title_lower = title.lower()
-    return any(kw in title_lower for kw in PRINTER_TITLE_KEYWORDS)
+def _collect_nmap_script_text(host_info):
+    chunks = []
+    for service in host_info.get('service_details', {}).values():
+        for output in service.get('scripts', {}).values():
+            if output:
+                chunks.append(str(output))
+    for output in host_info.get('scripts', {}).values():
+        if output:
+            chunks.append(str(output))
+    return '\n'.join(chunks)
 
 
 def determine_vendor_model(update_data, host_info):
@@ -198,11 +200,28 @@ def determine_vendor_model(update_data, host_info):
     ssl_cert = update_data.get('ssl_cert', {})
     snmp_info = update_data.get('snmp_info', {})
     host_type = update_data.get('type', '')
+    script_text = _collect_nmap_script_text(host_info)
+    script_lower = script_text.lower()
+
+    if not http_title:
+        title_match = re.search(r'http-title[:\s]+([^\n]+)', script_text, re.IGNORECASE)
+        if title_match:
+            http_title = title_match.group(1).strip()
+        else:
+            for service in host_info.get('service_details', {}).values():
+                script_title = service.get('scripts', {}).get('http-title')
+                if script_title:
+                    http_title = script_title.strip()
+                    break
 
     # --- 1. SSL cert issuer ---
     ssl_issuer = ''
     if isinstance(ssl_cert, dict):
         ssl_issuer = ssl_cert.get('issuer_cn', '').lower()
+    if not ssl_issuer and 'issuer:' in script_lower:
+        issuer_match = re.search(r'issuer[:=]\s*([^\n]+)', script_text, re.IGNORECASE)
+        if issuer_match:
+            ssl_issuer = issuer_match.group(1).strip().lower()
     if 'kerio' in ssl_issuer:
         vendor = vendor or 'Kerio'
         model = model or 'Kerio Control'
@@ -210,10 +229,14 @@ def determine_vendor_model(update_data, host_info):
         vendor = vendor or 'Proxmox'
         model = model or 'Proxmox VE'
 
-    # --- 2. SNMP sysDescr ---
+    # --- 2. nmap scripts / SNMP-like data ---
     sys_descr = ''
     if isinstance(snmp_info, dict):
         sys_descr = snmp_info.get('sysDescr', '')
+    if not sys_descr:
+        descr_match = re.search(r'sysdescr[:=]\s*([^\n]+)', script_text, re.IGNORECASE)
+        if descr_match:
+            sys_descr = descr_match.group(1).strip()
     if sys_descr:
         sd_lower = sys_descr.lower()
         if 'routeros' in sd_lower or 'mikrotik' in sd_lower:
@@ -235,6 +258,19 @@ def determine_vendor_model(update_data, host_info):
             vendor = vendor or title_v
         if title_m:
             model = model or title_m
+
+    if not vendor:
+        if 'routeros' in script_lower:
+            vendor = 'MikroTik'
+            model = model or 'RouterOS'
+        elif 'hikvision' in script_lower:
+            vendor = 'Hikvision'
+        elif 'dahua' in script_lower:
+            vendor = 'Dahua'
+        elif 'kerio' in script_lower:
+            vendor = 'Kerio'
+        elif 'proxmox' in script_lower:
+            vendor = 'Proxmox'
 
     # --- 4. OS / hostname ---
     if os_name:
@@ -279,7 +315,13 @@ def determine_vendor_model(update_data, host_info):
     # --- 6. MAC vendor (fallback) ---
     if mac_vendor:
         normalized = normalize_mac_vendor(mac_vendor)
-        vendor = vendor or normalized
+        # Если это ПК или сервер, то MAC-вендор (Realtek, Intel, Proxmox, VMware) обычно не является системным вендором
+        if host_type in ('server', 'workstation', 'windows', 'linux'):
+            ignore_vendors = ['realtek', 'intel', 'proxmox', 'vmware', 'qemu', 'asrock', 'gigabyte', 'micro-star', 'azurewave', 'liteon', 'hon hai', 'shenzhen', 'microsoft']
+            if not any(ign in normalized.lower() for ign in ignore_vendors):
+                vendor = vendor or normalized
+        else:
+            vendor = vendor or normalized
 
     # --- Санитизация model ---
     if model:

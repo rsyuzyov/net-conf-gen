@@ -1,10 +1,17 @@
 import csv
 import json
-import yaml
 import os
 import logging
-from datetime import datetime
-import html
+import yaml
+from src.constants import STATUS_COMPLETED, STATUS_UNKNOWN
+from src.models import HostRecord
+from src.report_presenters import (
+    CSV_KEYS,
+    ansible_connection_for_host,
+    csv_row_for_host,
+    html_row_for_host,
+    inventory_group_for_host,
+)
 from src.utils import ip_to_int
 
 logger = logging.getLogger(__name__)
@@ -18,10 +25,6 @@ class ReportGenerator:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-    def _get_vendor(self, host):
-        """Получает вендор из хоста."""
-        return host.get('vendor', '')
-    
     def _format_ports(self, ports):
         """Форматирует список портов в строку."""
         if not ports:
@@ -38,6 +41,30 @@ class ReportGenerator:
             return ', '.join(services)
         return str(services)
 
+    def _is_scan_completed(self, host):
+        """Определяет, есть ли успешный результат подключения."""
+        return host.get('scan_status') == STATUS_COMPLETED
+
+    def _get_primary_auth_method(self, host):
+        """Возвращает только успешный метод подключения."""
+        return host.get('auth_method', '')
+
+    def _get_scan_status(self, host):
+        return host.get('scan_status', '') or STATUS_UNKNOWN
+
+    def _sanitize_host_alias(self, value):
+        """Делает hostname безопасным для inventory/ssh alias."""
+        if not value:
+            return ''
+        alias = str(value).strip().split('.')[0]
+        alias = ''.join(ch if ch.isalnum() or ch == '-' else '-' for ch in alias)
+        alias = alias.strip('-')
+        if not alias:
+            return ''
+        if alias.lstrip('-').isdigit():
+            return ''
+        return alias[:63]
+
 
 
     def _sort_hosts_by_ip(self, hosts):
@@ -49,9 +76,8 @@ class ReportGenerator:
         return dict(sorted(data.items(), key=lambda x: ip_to_int(x[0])))
 
     def generate_all(self):
-        data = self.storage.data
-        hosts = self._sort_hosts_by_ip(list(data.values()))
-        sorted_data = self._sort_data_by_ip(data)
+        hosts = self._sort_hosts_by_ip(list(self.storage.iter_host_records()))
+        sorted_data = self._sort_data_by_ip({host.ip: host.to_dict() for host in hosts})
         
         self._generate_hosts_txt(hosts)
         self._generate_csv(hosts)
@@ -68,18 +94,17 @@ class ReportGenerator:
                 f.write(f"{h['ip']}\n")
 
     def _generate_csv(self, hosts):
-        keys = ['ip', 'hostname', 'type', 'os_type', 'os', 'vendor', 'model', 'mac', 'deep_scan_status', 'auth_method', 'open_ports', 'services', 'last_updated']
         with open(os.path.join(self.output_dir, 'scan_report.csv'), 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
+            writer = csv.DictWriter(f, fieldnames=CSV_KEYS, extrasaction='ignore')
             writer.writeheader()
             for host in hosts:
-                row = {k: host.get(k, '') for k in keys}
-                # Форматируем порты как строку
-                if 'open_ports' in row and isinstance(row['open_ports'], list):
-                    row['open_ports'] = self._format_ports(row['open_ports'])
-                # Форматируем сервисы как строку
-                if 'services' in row and isinstance(row['services'], list):
-                    row['services'] = self._format_services(row['services'])
+                row = csv_row_for_host(
+                    host,
+                    get_scan_status=self._get_scan_status,
+                    get_primary_auth_method=self._get_primary_auth_method,
+                    format_ports=self._format_ports,
+                    format_services=self._format_services,
+                )
                 writer.writerow(row)
 
     def _generate_json(self, data):
@@ -90,72 +115,16 @@ class ReportGenerator:
             yaml.dump(data, f, allow_unicode=True)
 
     def _classify_host_group(self, host):
-        """Определяет основную и дочернюю группу хоста для inventory."""
-        os_type = host.get('os_type', '').lower()
-        host_type = host.get('type', '').lower()
-        vendor = host.get('vendor', '').lower()
-        os_name = host.get('os', '').lower()
-
-        # MikroTik — три признака
-        if (host_type == 'mikrotik'
-                or 'mikrotik' in vendor or 'routerboard' in vendor
-                or 'mikrotik' in os_name):
-            return 'mikrotik', None
-
-        # Принтеры
-        if host_type == 'printer':
-            return 'printers', None
-
-        # Камеры
-        if host_type == 'camera':
-            return 'cameras', None
-
-        # Сетевое оборудование (не MikroTik)
-        if host_type == 'network':
-            return 'network_devices', None
-
-        # Windows → подгруппы
-        if os_type == 'windows':
-            if host_type == 'server':
-                return 'windows', 'windows_servers'
-            return 'windows', 'windows_workstations'
-
-        # Linux → подгруппа
-        if os_type == 'linux':
-            if host_type == 'server':
-                return 'linux', 'linux_servers'
-            return 'linux', None
-
-        # Android / mobile / IoT / unknown
-        return 'unknown', None
+        return inventory_group_for_host(host)
 
     def _determine_ansible_connection(self, host):
-        """Определяет ansible_connection по приоритету: ssh > winrm > psexec."""
-        auth_methods = host.get('auth_methods', [])
-        if not auth_methods:
-            # Фолбэк на auth_method (одиночное значение)
-            auth_method = host.get('auth_method', '')
-            if auth_method in ('ssh', 'ssh_key'):
-                return 'ssh'
-            elif auth_method == 'winrm':
-                return 'winrm'
-            elif auth_method == 'psexec':
-                return 'psexec'
-            return None
-
-        if 'ssh' in auth_methods:
-            return 'ssh'
-        if 'winrm' in auth_methods:
-            return 'winrm'
-        if 'psexec' in auth_methods:
-            return 'psexec'
-        return None
+        return ansible_connection_for_host(host.get('auth_method', ''))
 
     def _generate_ansible_inventory(self, hosts):
         # Все группы верхнего уровня
         groups = [
             'windows', 'linux', 'mikrotik',
-            'network_devices', 'printers', 'cameras', 'unknown'
+            'network_devices', 'printers', 'cameras', STATUS_UNKNOWN
         ]
         # Подгруппы
         subgroups = {
@@ -184,15 +153,15 @@ class ReportGenerator:
 
         for h in hosts:
             ip = h['ip']
-            name = h.get('hostname') if h.get('hostname') else ip
+            name = self._sanitize_host_alias(h.get('hostname')) or ip
 
             group, subgroup = self._classify_host_group(h)
 
             # Формируем данные хоста
             host_data = {'ansible_host': ip}
 
-            # Добавляем connection-данные если deep_scan завершён
-            if h.get('deep_scan_status') == 'completed':
+            # Добавляем connection-данные если authenticated enrichment завершён
+            if self._is_scan_completed(h):
                 connection = self._determine_ansible_connection(h)
                 if connection:
                     host_data['ansible_connection'] = connection
@@ -210,11 +179,11 @@ class ReportGenerator:
                 inventory['all']['children'][group]['hosts'][name] = host_data
 
             # Secrets (для обратной совместимости)
-            if h.get('deep_scan_status') == 'completed' and h.get('user'):
+            if self._is_scan_completed(h) and h.get('user'):
                 secrets[name] = {
                     'ansible_user': h['user']
                 }
-                if h.get('auth_method') == 'winrm':
+                if self._get_primary_auth_method(h) == 'winrm':
                     secrets[name]['ansible_connection'] = 'winrm'
                     secrets[name]['ansible_winrm_server_cert_validation'] = 'ignore'
 
@@ -252,8 +221,8 @@ class ReportGenerator:
         # Группируем хосты по os_type для комментариев
         grouped = {}
         for h in hosts:
-            if h.get('deep_scan_status') == 'completed' and h.get('auth_method') in ('ssh', 'ssh_key'):
-                os_type = h.get('os_type', 'unknown')
+            if self._is_scan_completed(h) and self._get_primary_auth_method(h) == 'ssh':
+                os_type = h.get('os_type', STATUS_UNKNOWN)
                 grouped.setdefault(os_type, []).append(h)
 
         # Порядок вывода
@@ -273,7 +242,7 @@ class ReportGenerator:
 
             for h in grouped[os_type]:
                 ip = h['ip']
-                hostname = h.get('hostname')
+                hostname = self._sanitize_host_alias(h.get('hostname'))
                 user = h.get('user')
                 key_path = h.get('key_path')
 
@@ -314,165 +283,18 @@ class ReportGenerator:
             f.write('\n'.join(config_lines))
 
     def _generate_html(self, hosts):
-        """
-        Генерирует HTML-отчет с результатами сканирования.
-        
-        Args:
-            hosts: Список словарей хостов, содержащих данные сканирования
-        
-        Returns:
-            None (записывает файл на диск)
-        """
+        from datetime import datetime
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Порты, открываемые в браузере: порт -> протокол
-        WEB_PORTS = {
-            80: 'http', 443: 'https',
-            8080: 'http', 8443: 'https',
-            8006: 'https',  # Proxmox
-            4081: 'https',  # Kerio Admin
-            9090: 'http',   # Prometheus/Cockpit
-            3000: 'http',   # Grafana
-            8291: 'http',   # MikroTik Winbox (web)
-            8728: 'http',   # MikroTik API
-        }
-        
-        # Обратный маппинг: имя сервиса -> порт (для колонки Services)
-        SERVICE_TO_PORT = {
-            'HTTP': 80, 'HTTPS': 443,
-            'HTTP-Alt': 8080, 'HTTPS-Alt': 8443,
-            'Proxmox': 8006, 'Kerio-Admin': 4081,
-            'Prometheus': 9090, 'Grafana': 3000,
-        }
-        
-        # Helper function to escape HTML and handle None values
-        def escape_value(value):
-            if value is None or value == '':
-                return ''
-            return html.escape(str(value))
-        
-        # Helper function to format datetime
-        def format_datetime(dt_str):
-            if not dt_str:
-                return ''
-            try:
-                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                return dt.strftime('%Y-%m-%d %H:%M:%S')
-            except Exception as e:
-                logger.warning(f"Некорректный формат datetime: {dt_str}, {e}")
-                return str(dt_str)
-        
-        def make_link(label, link_type, ip, hostname, domain, port='', user='', target=''):
-            """Создаёт ссылку с data-атрибутами для динамического переключения адресации."""
-            fqdn = f"{hostname}.{domain}" if hostname and domain else ip
-            t = f' target="{target}"' if target else ''
-            return (f'<a class="host-link" href="#"'
-                    f' data-ip="{html.escape(ip)}"'
-                    f' data-name="{html.escape(hostname or ip)}"'
-                    f' data-fqdn="{html.escape(fqdn)}"'
-                    f' data-type="{link_type}"'
-                    f' data-port="{port}"'
-                    f' data-user="{html.escape(user)}"'
-                    f'{t}>{label}</a>')
-        
-        domain = self.domain or ''
-        
-        def format_ports_html(ip, hostname, ports, ssh_user=None):
-            """Форматирует порты, делая веб-порты, SSH и RDP кликабельными."""
-            if not ports:
-                return ''
-            if not isinstance(ports, list):
-                return html.escape(str(ports))
-            parts = []
-            for port in sorted(ports):
-                if port == 22 and ssh_user:
-                    parts.append(make_link(str(port), 'ssh', ip, hostname, domain, user=ssh_user))
-                elif port == 3389:
-                    parts.append(make_link(str(port), 'rdp', ip, hostname, domain))
-                elif port == 445:
-                    parts.append(make_link(str(port), 'smb', ip, hostname, domain))
-                elif port in (5985, 5986):
-                    parts.append(make_link(str(port), 'winrm', ip, hostname, domain, user=ssh_user or ''))
-                elif port in WEB_PORTS:
-                    proto = WEB_PORTS[port]
-                    parts.append(make_link(str(port), proto, ip, hostname, domain, port=str(port), target='_blank'))
-                else:
-                    parts.append(str(port))
-            return ', '.join(parts)
-        
-        def format_services_html(ip, hostname, services, open_ports, ssh_user=None):
-            """Форматирует сервисы, делая веб-сервисы, SSH и RDP кликабельными."""
-            if not services:
-                return ''
-            if not isinstance(services, list):
-                return html.escape(str(services))
-            open_ports_set = set(open_ports) if open_ports else set()
-            parts = []
-            for svc in services:
-                if svc == 'SSH' and 22 in open_ports_set and ssh_user:
-                    parts.append(make_link('SSH', 'ssh', ip, hostname, domain, user=ssh_user))
-                elif svc == 'RDP' and 3389 in open_ports_set:
-                    parts.append(make_link('RDP', 'rdp', ip, hostname, domain))
-                elif svc == 'SMB' and 445 in open_ports_set:
-                    parts.append(make_link('SMB', 'smb', ip, hostname, domain))
-                elif svc == 'WinRM' and (5985 in open_ports_set or 5986 in open_ports_set):
-                    parts.append(make_link('WinRM', 'winrm', ip, hostname, domain, user=ssh_user or ''))
-                else:
-                    port = SERVICE_TO_PORT.get(svc)
-                    if port and port in open_ports_set and port in WEB_PORTS:
-                        proto = WEB_PORTS[port]
-                        parts.append(make_link(html.escape(svc), proto, ip, hostname, domain, port=str(port), target='_blank'))
-                    else:
-                        parts.append(html.escape(svc))
-            return ', '.join(parts)
-        
-        # Build table rows
-        table_rows = []
-        for host in hosts:
-            os_type = host.get('os_type', '')
-            deep_scan_status = host.get('deep_scan_status', '')
-            ip = host.get('ip', '')
-            hostname = host.get('hostname', '')
-            user = host.get('user', '')
-            auth_method = host.get('auth_method', '')
-            
-            # Determine CSS class for host type
-            type_class = f"host-{os_type}"
-            
-            # Add deep scan completed class if applicable
-            row_class = type_class
-            if deep_scan_status == 'completed':
-                row_class += " deep-scan-completed"
-            
-            ports_html = format_ports_html(ip, hostname, host.get('open_ports'), ssh_user=user)
-            services_html = format_services_html(ip, hostname, host.get('services'), host.get('open_ports'), ssh_user=user)
-            
-            # Auth method: делаем SSH и RDP кликабельными
-            open_ports = host.get('open_ports', [])
-            if auth_method == 'ssh' and user:
-                auth_html = make_link(html.escape(auth_method), 'ssh', ip, hostname, domain, user=user)
-            elif auth_method in ('winrm', 'psexec') and 3389 in (open_ports or []):
-                auth_html = make_link(html.escape(auth_method), 'rdp', ip, hostname, domain)
-            else:
-                auth_html = escape_value(auth_method)
-            
-            row = f"""                <tr class="{row_class}">
-                    <td>{escape_value(host.get('ip'))}</td>
-                    <td>{escape_value(host.get('hostname'))}</td>
-                    <td>{escape_value(host.get('type'))}</td>
-                    <td>{escape_value(host.get('os_type'))}</td>
-                    <td>{escape_value(host.get('os'))}</td>
-                    <td>{escape_value(host.get('vendor'))}</td>
-                    <td>{escape_value(host.get('model'))}</td>
-                    <td>{escape_value(host.get('mac'))}</td>
-                    <td>{escape_value(host.get('deep_scan_status'))}</td>
-                    <td title="{escape_value(user)}">{auth_html}</td>
-                    <td>{ports_html}</td>
-                    <td>{services_html}</td>
-                    <td>{escape_value(format_datetime(host.get('last_updated')))}</td>
-                </tr>
-"""
-            table_rows.append(row)
+        table_rows = [
+            html_row_for_host(
+                host,
+                domain=self.domain or '',
+                sanitize_host_alias=self._sanitize_host_alias,
+                get_primary_auth_method=self._get_primary_auth_method,
+                get_scan_status=self._get_scan_status,
+            )
+            for host in hosts
+        ]
         
         # Load template
         template_path = os.path.join(os.path.dirname(__file__), 'report_template.html')
@@ -485,19 +307,19 @@ class ReportGenerator:
         
         # Build type summary
         from collections import Counter
-        type_counts = Counter(h.get('type', 'unknown') or 'unknown' for h in hosts)
+        type_counts = Counter(h.get('type', STATUS_UNKNOWN) or STATUS_UNKNOWN for h in hosts)
         type_summary_parts = [f'{t}: {c}' for t, c in sorted(type_counts.items())]
         type_summary_html = ' &nbsp;|&nbsp; '.join(type_summary_parts)
 
         # Fill template
         targets_str = ', '.join(self.targets) if self.targets else ''
         html_content = template.format(
-            timestamp=escape_value(timestamp),
+            timestamp=timestamp,
             table_rows=''.join(table_rows),
             total_hosts=len(hosts),
             type_summary=type_summary_html,
-            domain=escape_value(self.domain),
-            targets=escape_value(targets_str)
+            domain=self.domain,
+            targets=targets_str
         )
         
         # Write to file
