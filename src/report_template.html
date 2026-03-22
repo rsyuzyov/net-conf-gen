@@ -189,6 +189,29 @@
         URL.revokeObjectURL(a.href);
     }}
 
+    function openSmb(host) {{
+        var path = '\\\\' + host;
+        navigator.clipboard.writeText(path).then(function() {{
+            var n = document.createElement('div');
+            n.textContent = '\u2705 Скопировано: ' + path + ' — вставьте в проводник или Win+R';
+            n.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px 18px;border-radius:8px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3)';
+            document.body.appendChild(n);
+            setTimeout(function(){{ n.remove(); }}, 2500);
+        }});
+    }}
+
+    function copyWinRM(host, user) {{
+        var cmd = 'Enter-PSSession -ComputerName ' + host;
+        if (user) cmd += ' -Credential ' + user;
+        navigator.clipboard.writeText(cmd).then(function() {{
+            var n = document.createElement('div');
+            n.textContent = '\u2705 Скопировано: ' + cmd;
+            n.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px 18px;border-radius:8px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3)';
+            document.body.appendChild(n);
+            setTimeout(function(){{ n.remove(); }}, 2500);
+        }});
+    }}
+
     function updateLinks() {{
         var mode = document.getElementById('addr-mode').value;
         var links = document.querySelectorAll('.host-link');
@@ -202,6 +225,10 @@
                 href = 'ssh://' + (user ? user + '@' : '') + host;
             }} else if (type === 'rdp') {{
                 href = "javascript:openRdp('" + host + "')";
+            }} else if (type === 'smb') {{
+                href = "javascript:openSmb('" + host + "')";
+            }} else if (type === 'winrm') {{
+                href = "javascript:copyWinRM('" + host + "','" + (user || '') + "')";
             }} else if (type === 'http' || type === 'https') {{
                 var defaultPort = (type === 'http') ? '80' : '443';
                 if (port === defaultPort || port === '') {{

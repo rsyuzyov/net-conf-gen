@@ -1,5 +1,6 @@
 """Общие утилиты net-conf-gen."""
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -12,3 +13,38 @@ def ip_to_int(ip):
     except Exception as e:
         logger.warning(f"Некорректный IP при сортировке: {ip}, {e}")
         return 0
+
+
+def decode_windows_output(data: bytes) -> str:
+    """Декодирует вывод cmd.exe / WinRM: UTF-8 (с BOM) → cp1251 → cp866 → latin-1."""
+    if not data:
+        return ''
+    # Удаляем BOM если есть
+    if data.startswith(b'\xef\xbb\xbf'):
+        data = data[3:]
+    for enc in ('utf-8', 'cp1251', 'cp866', 'latin-1'):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode('utf-8', errors='replace')
+
+
+def normalize_os_name(os_str: str) -> str:
+    """Нормализация имени ОС.
+
+    - Майкрософт → Microsoft
+    - Кракозябры (???? Windows 10 Pro) → Microsoft Windows 10 Pro
+    """
+    if not os_str or not isinstance(os_str, str):
+        return os_str or ''
+
+    # Нормализация «Майкрософт» → «Microsoft»
+    if 'Майкрософт' in os_str:
+        os_str = os_str.replace('Майкрософт', 'Microsoft')
+
+    # Кракозябры в начале
+    if re.match(r'^\?{3,}\s+', os_str):
+        os_str = re.sub(r'^\?+\s*', 'Microsoft ', os_str)
+
+    return os_str

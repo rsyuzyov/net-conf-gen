@@ -6,22 +6,9 @@ import os
 import sys
 import ctypes
 from . import BaseConnector
+from src.utils import decode_windows_output as _decode_output
 
 logger = logging.getLogger(__name__)
-
-def _decode_output(data: bytes) -> str:
-    """Декодирует вывод WinRM: пробует UTF-8 (с BOM) → cp1251 → cp866 → latin-1."""
-    if not data:
-        return ''
-    # Удаляем BOM если есть
-    if data.startswith(b'\xef\xbb\xbf'):
-        data = data[3:]
-    for enc in ('utf-8', 'cp1251', 'cp866', 'latin-1'):
-        try:
-            return data.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return data.decode('utf-8', errors='replace')
 
 # Suppress noisy errors from the library
 logging.getLogger('winrm').setLevel(logging.CRITICAL)

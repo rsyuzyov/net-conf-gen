@@ -1,18 +1,12 @@
 import logging
+import re
+import traceback
 from pypsexec.client import Client
 from smbprotocol.exceptions import SMBAuthenticationError, LogonFailure, SMBConnectionClosed
 from . import BaseConnector
+from src.utils import decode_windows_output as _decode_output
 
 logger = logging.getLogger(__name__)
-
-def _decode_output(data: bytes) -> str:
-    """Декодирует вывод cmd.exe: utf-8 → cp866 → cp1251 → latin-1."""
-    for enc in ('utf-8', 'cp866', 'cp1251', 'latin-1'):
-        try:
-            return data.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return data.decode('utf-8', errors='replace')
 
 class PsExecConnector(BaseConnector):
     def connect(self, ip, user, password=None, key_path=None):
@@ -139,7 +133,6 @@ class PsExecConnector(BaseConnector):
                 logger.warning(f"PsExec {ip}: соединение разорвано хостом (нет прав или политика)")
             else:
                 logger.warning(f"PsExec {ip}: ошибка подключения: {error_type} - {error_str}")
-                import traceback
                 logger.debug(f"PsExec traceback: {traceback.format_exc()}")
             return None
 

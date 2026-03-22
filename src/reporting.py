@@ -129,6 +129,28 @@ class ReportGenerator:
         # Android / mobile / IoT / unknown
         return 'unknown', None
 
+    def _determine_ansible_connection(self, host):
+        """Определяет ansible_connection по приоритету: ssh > winrm > psexec."""
+        auth_methods = host.get('auth_methods', [])
+        if not auth_methods:
+            # Фолбэк на auth_method (одиночное значение)
+            auth_method = host.get('auth_method', '')
+            if auth_method in ('ssh', 'ssh_key'):
+                return 'ssh'
+            elif auth_method == 'winrm':
+                return 'winrm'
+            elif auth_method == 'psexec':
+                return 'psexec'
+            return None
+
+        if 'ssh' in auth_methods:
+            return 'ssh'
+        if 'winrm' in auth_methods:
+            return 'winrm'
+        if 'psexec' in auth_methods:
+            return 'psexec'
+        return None
+
     def _generate_ansible_inventory(self, hosts):
         # Все группы верхнего уровня
         groups = [
@@ -141,8 +163,13 @@ class ReportGenerator:
             'linux': ['linux_servers'],
         }
 
-        # Инициализация структуры inventory
-        inventory = {'all': {'children': {}}}
+        # Инициализация структуры inventory с общими vars
+        inventory = {'all': {
+            'vars': {
+                'ansible_ssh_common_args': '-o StrictHostKeyChecking=no',
+            },
+            'children': {}
+        }}
         for g in groups:
             if g in subgroups:
                 # Группа с подгруппами
@@ -161,13 +188,28 @@ class ReportGenerator:
 
             group, subgroup = self._classify_host_group(h)
 
+            # Формируем данные хоста
+            host_data = {'ansible_host': ip}
+
+            # Добавляем connection-данные если deep_scan завершён
+            if h.get('deep_scan_status') == 'completed':
+                connection = self._determine_ansible_connection(h)
+                if connection:
+                    host_data['ansible_connection'] = connection
+                    if connection == 'winrm':
+                        host_data['ansible_winrm_server_cert_validation'] = 'ignore'
+
+                user = h.get('user')
+                if user:
+                    host_data['ansible_user'] = user
+
             # Помещаем хост в подгруппу (если есть) или в основную группу
             if subgroup and subgroup in inventory['all']['children'].get(group, {}).get('children', {}):
-                inventory['all']['children'][group]['children'][subgroup]['hosts'][name] = {'ansible_host': ip}
+                inventory['all']['children'][group]['children'][subgroup]['hosts'][name] = host_data
             else:
-                inventory['all']['children'][group]['hosts'][name] = {'ansible_host': ip}
+                inventory['all']['children'][group]['hosts'][name] = host_data
 
-            # Secrets
+            # Secrets (для обратной совместимости)
             if h.get('deep_scan_status') == 'completed' and h.get('user'):
                 secrets[name] = {
                     'ansible_user': h['user']
@@ -201,39 +243,71 @@ class ReportGenerator:
         # Keep track of used host aliases to avoid duplicates
         used_aliases = set()
 
+        # Заголовок
+        if self.domain:
+            config_lines.append(f"# SSH config для домена {self.domain}")
+            config_lines.append(f"# Сгенерировано автоматически из inventory")
+            config_lines.append("")
+
+        # Группируем хосты по os_type для комментариев
+        grouped = {}
         for h in hosts:
             if h.get('deep_scan_status') == 'completed' and h.get('auth_method') in ('ssh', 'ssh_key'):
+                os_type = h.get('os_type', 'unknown')
+                grouped.setdefault(os_type, []).append(h)
+
+        # Порядок вывода
+        group_order = ['linux', 'windows']
+        group_labels = {'linux': 'Linux', 'windows': 'Windows'}
+        # Добавляем остальные группы, которые не в порядке
+        for os_type in grouped:
+            if os_type not in group_order:
+                group_order.append(os_type)
+
+        for os_type in group_order:
+            if os_type not in grouped:
+                continue
+            
+            label = group_labels.get(os_type, os_type.capitalize())
+            config_lines.append(f"# --- {label} ---")
+
+            for h in grouped[os_type]:
                 ip = h['ip']
                 hostname = h.get('hostname')
                 user = h.get('user')
                 key_path = h.get('key_path')
 
                 # Determine Host alias
-                # Use hostname if available and not empty, otherwise use IP
-                # Clean hostname to be valid for SSH config (basic check)
                 if hostname:
-                    alias = hostname.split('.')[0] # Use short hostname for convenience
+                    short_name = hostname.split('.')[0]
                 else:
-                    alias = ip
+                    short_name = ip
                 
                 # Ensure unique alias
-                base_alias = alias
+                base_alias = short_name
                 counter = 1
-                while alias in used_aliases:
-                    alias = f"{base_alias}-{counter}"
+                while short_name in used_aliases:
+                    short_name = f"{base_alias}-{counter}"
                     counter += 1
-                used_aliases.add(alias)
+                used_aliases.add(short_name)
 
-                config_lines.append(f"Host {alias}")
+                # FQDN alias: hostname.domain
+                if hostname and self.domain:
+                    fqdn = f"{hostname}.{self.domain}" if '.' not in hostname else hostname
+                    # Host line: fqdn + short alias
+                    if fqdn != short_name:
+                        config_lines.append(f"Host {fqdn} {short_name}")
+                    else:
+                        config_lines.append(f"Host {short_name}")
+                else:
+                    config_lines.append(f"Host {short_name}")
+                
                 config_lines.append(f"    HostName {ip}")
                 if user:
                     config_lines.append(f"    User {user}")
                 if key_path:
                     config_lines.append(f"    IdentityFile {key_path}")
                 
-                # Useful defaults for scanning results where keys might change or are unknown
-                config_lines.append("    StrictHostKeyChecking no") 
-                config_lines.append("    UserKnownHostsFile /dev/null")
                 config_lines.append("")
         
         with open(os.path.join(self.output_dir, 'ssh_config'), 'w', encoding='utf-8') as f:
@@ -315,6 +389,10 @@ class ReportGenerator:
                     parts.append(make_link(str(port), 'ssh', ip, hostname, domain, user=ssh_user))
                 elif port == 3389:
                     parts.append(make_link(str(port), 'rdp', ip, hostname, domain))
+                elif port == 445:
+                    parts.append(make_link(str(port), 'smb', ip, hostname, domain))
+                elif port in (5985, 5986):
+                    parts.append(make_link(str(port), 'winrm', ip, hostname, domain, user=ssh_user or ''))
                 elif port in WEB_PORTS:
                     proto = WEB_PORTS[port]
                     parts.append(make_link(str(port), proto, ip, hostname, domain, port=str(port), target='_blank'))
@@ -335,6 +413,10 @@ class ReportGenerator:
                     parts.append(make_link('SSH', 'ssh', ip, hostname, domain, user=ssh_user))
                 elif svc == 'RDP' and 3389 in open_ports_set:
                     parts.append(make_link('RDP', 'rdp', ip, hostname, domain))
+                elif svc == 'SMB' and 445 in open_ports_set:
+                    parts.append(make_link('SMB', 'smb', ip, hostname, domain))
+                elif svc == 'WinRM' and (5985 in open_ports_set or 5986 in open_ports_set):
+                    parts.append(make_link('WinRM', 'winrm', ip, hostname, domain, user=ssh_user or ''))
                 else:
                     port = SERVICE_TO_PORT.get(svc)
                     if port and port in open_ports_set and port in WEB_PORTS:
