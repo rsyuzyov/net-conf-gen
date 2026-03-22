@@ -31,7 +31,7 @@ STRATEGIES = {
     'linux': [
         ScanStep('reverse_dns'),
         ScanStep('connect_ssh', stop_on_success=True),
-        ScanStep('http_title'),       # Proxmox, Grafana, Kibana
+        ScanStep('http_deep'),        # deep: NanoKVM, TP-Link с SSH, Proxmox
         ScanStep('snmp'),
     ],
     'mikrotik': [
@@ -47,6 +47,10 @@ STRATEGIES = {
     'camera': [
         ScanStep('http_title'),
         ScanStep('snmp'),
+        ScanStep('reverse_dns'),
+    ],
+    'ipkvm': [
+        ScanStep('http_deep'),
         ScanStep('reverse_dns'),
     ],
     'network': [

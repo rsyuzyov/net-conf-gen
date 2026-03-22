@@ -17,12 +17,13 @@ NETWORK = 'network'
 UNKNOWN = 'unknown'
 
 # Маркерные порты
-_WINDOWS_PORTS = {135, 5985}
+_WINDOWS_PORTS = {135, 5985, 3389}
 _MIKROTIK_PORTS = {8728, 8729}
 _MIKROTIK_WINBOX = 8291
 _PRINTER_PORTS = {9100, 515}
 _CAMERA_PORTS = {554, 8899, 34567}
 _NETWORK_PORTS = {4081, 4040}
+_SERVER_PORTS = {22, 8006}  # порты, которые говорят "это НЕ принтер"
 
 # MAC vendor → категория
 _VENDOR_CATEGORY = {
@@ -30,8 +31,7 @@ _VENDOR_CATEGORY = {
     'mikrotik': MIKROTIK, 'routerboard': MIKROTIK,
     # Camera
     'hikvision': CAMERA, 'dahua': CAMERA,
-    # Printer
-    'hewlett packard': PRINTER, 'hp inc': PRINTER,
+    # Printer (only standalone printers, not servers with JetDirect port)
     'canon': PRINTER, 'epson': PRINTER, 'brother': PRINTER,
     'xerox': PRINTER, 'ricoh': PRINTER, 'konica minolta': PRINTER,
     # Network
@@ -69,11 +69,11 @@ def classify(open_ports, mac_vendor='', ttl=None):
     if _CAMERA_PORTS & ports:
         return CAMERA
 
-    # 3. Принтер (JetDirect, LPR) — но НЕ если есть Windows-порты
-    if _PRINTER_PORTS & ports and not (_WINDOWS_PORTS & ports):
+    # 3. Принтер (JetDirect, LPR) — но НЕ если есть Windows/SSH/server порты
+    if _PRINTER_PORTS & ports and not (_WINDOWS_PORTS & ports) and not (_SERVER_PORTS & ports):
         return PRINTER
 
-    # 4. Windows (RPC, WinRM)
+    # 4. Windows (RPC, WinRM, RDP)
     if _WINDOWS_PORTS & ports:
         return WINDOWS
 
@@ -81,14 +81,14 @@ def classify(open_ports, mac_vendor='', ttl=None):
     if _NETWORK_PORTS & ports:
         return NETWORK
 
-    # 6. MAC vendor
+    # 6. MAC vendor — приоритетнее SSH
     if mac_vendor:
         vendor_lower = mac_vendor.lower()
         for pattern, category in _VENDOR_CATEGORY.items():
             if pattern in vendor_lower:
                 return category
 
-    # 7. SSH → скорее всего Linux
+    # 7. SSH → скорее всего Linux (но НЕ если MAC vendor уже обработан выше)
     if 22 in ports:
         return LINUX
 

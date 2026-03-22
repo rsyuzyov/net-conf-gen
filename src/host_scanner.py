@@ -609,6 +609,7 @@ class HostScanner:
                 'printer': 'linux',
                 'camera': 'linux',
                 'network': 'linux',
+                'ipkvm': 'linux',
             }
             update_data['os_type'] = type_map.get(category, 'linux')
 
@@ -620,6 +621,7 @@ class HostScanner:
                 'printer': 'printer',
                 'camera': 'camera',
                 'network': 'network',
+                'ipkvm': 'ipkvm',
             }
             if category in type_map:
                 update_data['type'] = type_map[category]
