@@ -81,6 +81,57 @@ class ModelsStorageTests(unittest.TestCase):
             self.assertEqual(['ssh'], host.auth_methods)
             self.assertEqual('root', host.user)
 
+    def test_storage_preserves_kernel_distribution_and_success_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.30', {
+                'ip': '192.168.1.30',
+                'kernel_version': '6.8.12-pve',
+                'distribution': 'Debian GNU/Linux 12 (bookworm)',
+                'success': True,
+            })
+            storage.flush()
+
+            host = storage.get_host_record('192.168.1.30')
+
+            self.assertEqual('6.8.12-pve', host.kernel_version)
+            self.assertEqual('Debian GNU/Linux 12 (bookworm)', host.distribution)
+            self.assertTrue(host.success)
+
+    def test_replace_discovery_snapshot_does_not_preserve_runtime_fields_for_non_completed_host(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.40', {
+                'ip': '192.168.1.40',
+                'scan_status': 'auth_available_no_access',
+                'kernel_version': '6.8.12-pve',
+                'distribution': 'Debian GNU/Linux 12 (bookworm)',
+                'success': True,
+                'auth_methods': ['ssh'],
+                'auth_attempts': [{'method': 'ssh', 'user': 'root', 'status': 'auth_failed', 'error': 'x'}],
+            })
+            storage.flush()
+
+            storage.replace_discovery_snapshot([
+                HostRecord(
+                    ip='192.168.1.40',
+                    open_ports=[22],
+                    services=['SSH'],
+                    category='unknown',
+                    os_type='',
+                    type='unknown',
+                    scan_status='discovered',
+                )
+            ])
+            storage.flush()
+
+            host = storage.get_host_record('192.168.1.40')
+            self.assertEqual('', host.kernel_version)
+            self.assertEqual('', host.distribution)
+            self.assertFalse(host.success)
+            self.assertEqual([], host.auth_methods)
+            self.assertEqual([], host.auth_attempts)
+
 
 if __name__ == '__main__':
     unittest.main()

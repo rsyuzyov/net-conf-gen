@@ -5,6 +5,7 @@ import getpass
 import os
 import sys
 import ctypes
+import time
 from . import BaseConnector
 from src.utils import decode_windows_output as _decode_output
 
@@ -94,44 +95,73 @@ class WinRMConnector(BaseConnector):
             # Оставляем поведение по умолчанию, если gssapi не установлена
             pass
 
+    def _is_permanent_auth_error(self, detail):
+        detail = (detail or '').lower()
+        return any(token in detail for token in (
+            'specified credentials were rejected',
+            'logon failure',
+            'unknown user name or bad password',
+            'unauthorized',
+            '401',
+        ))
+
     def _test_connection(self, session):
         """Проверяет работоспособность подключения простой командой."""
         try:
             result = session.run_cmd('echo test')
-            return result.status_code == 0
-        except Exception:
-            return False
+            if result.status_code == 0:
+                return True, ''
+
+            stderr = _decode_output(result.std_err).strip()
+            stdout = _decode_output(result.std_out).strip()
+            detail = stderr or stdout or f'Command returned status {result.status_code}'
+            return False, detail
+        except Exception as e:
+            return False, str(e)
 
     def connect(self, ip, user=None, password=None, key_path=None):
         self._ensure_gssapi_auth()
         
         if user and password:
             # NTLM аутентификация
-            try:
-                session = winrm.Session(f'http://{ip}:5985/wsman', auth=(user, password), transport='ntlm')
-                
-                if not self._test_connection(session):
-                    return {'auth_failed': True, 'error': 'Connection test failed'}
-                
-                os_info = self._get_host_info(ip, session)
-                logger.info(f"{ip}: Успешное подключение через winrm (NTLM) user={user}")
-                
-                return {
-                    'success': True,
-                    'auth_method': 'winrm',
-                    'hostname': os_info['hostname'],
-                    'os': os_info.get('os', 'Windows'),
-                    'os_type': 'windows',
-                    'type': 'workstation',
-                    'user': user,
-                    'mac': os_info.get('mac', ''),
-                    'kernel_version': os_info.get('kernel_version', '')
-                }
-            except Exception as e:
-                error_str = str(e).lower()
-                if any(kw in error_str for kw in ['401', 'unauthorized', 'authentication', 'credentials', 'logon failure']):
-                    return {'auth_failed': True, 'error': f'Authentication failed: {str(e)}'}
-                return {'error': f'Connection error: {str(e)}'}
+            last_error = ''
+            for attempt in range(2):
+                try:
+                    session = winrm.Session(f'http://{ip}:5985/wsman', auth=(user, password), transport='ntlm')
+
+                    ok, detail = self._test_connection(session)
+                    if not ok:
+                        last_error = detail or 'Connection test failed'
+                        if self._is_permanent_auth_error(last_error) or attempt == 1:
+                            return {'auth_failed': True, 'error': last_error}
+                        time.sleep(0.5)
+                        continue
+
+                    os_info = self._get_host_info(ip, session)
+                    logger.info(f"{ip}: Успешное подключение через winrm (NTLM) user={user}")
+
+                    return {
+                        'success': True,
+                        'auth_method': 'winrm',
+                        'hostname': os_info['hostname'],
+                        'os': os_info.get('os', 'Windows'),
+                        'os_type': 'windows',
+                        'type': 'workstation',
+                        'user': user,
+                        'mac': os_info.get('mac', ''),
+                        'kernel_version': os_info.get('kernel_version', '')
+                    }
+                except Exception as e:
+                    error_str = str(e)
+                    lowered = error_str.lower()
+                    if any(kw in lowered for kw in ['401', 'unauthorized', 'authentication', 'credentials', 'logon failure']):
+                        return {'auth_failed': True, 'error': error_str}
+                    last_error = error_str
+                    if attempt == 1:
+                        return {'error': f'Connection error: {error_str}'}
+                    time.sleep(0.5)
+
+            return {'auth_failed': True, 'error': last_error or 'Connection test failed'}
         
         # SSO аутентификация
         user = os.environ.get('USERNAME', getpass.getuser())
@@ -143,8 +173,9 @@ class WinRMConnector(BaseConnector):
                     warnings.simplefilter("ignore")
                     session = winrm.Session(f'http://{ip}:5985/wsman', auth=(None, None), transport=transport)
                     
-                    if not self._test_connection(session):
-                        logger.debug(f"Пробуем WinRM SSO для {ip} с {transport}... тест подключения не прошёл")
+                    ok, detail = self._test_connection(session)
+                    if not ok:
+                        logger.debug(f"Пробуем WinRM SSO для {ip} с {transport}... {detail or 'тест подключения не прошёл'}")
                         continue
                     
                     os_info = self._get_host_info(ip, session)

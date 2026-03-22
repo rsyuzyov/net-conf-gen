@@ -1,6 +1,7 @@
 """Общие утилиты net-conf-gen."""
 import logging
 import re
+import socket
 
 logger = logging.getLogger(__name__)
 
@@ -48,3 +49,28 @@ def normalize_os_name(os_str: str) -> str:
         os_str = re.sub(r'^\?+\s*', 'Microsoft ', os_str)
 
     return os_str
+
+
+def reverse_dns_name(ip: str) -> tuple[str, list[str]]:
+    """Возвращает canonical hostname и aliases через PTR lookup.
+
+    Returns:
+        tuple[str, list[str]]: (hostname, hostnames)
+    """
+    try:
+        hostname, aliases, _ = socket.gethostbyaddr(ip)
+    except (socket.herror, socket.gaierror, OSError):
+        return '', []
+
+    names = []
+    for candidate in [hostname, *aliases]:
+        value = str(candidate).strip().lower().rstrip('.')
+        if value and value not in names:
+            names.append(value)
+
+    if not names:
+        return '', []
+
+    primary = names[0]
+    short = primary.split('.')[0]
+    return short, names

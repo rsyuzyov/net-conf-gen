@@ -192,9 +192,9 @@ def html_row_for_host(host, domain, sanitize_host_alias, get_primary_auth_method
     vendor_val = field_value(host, 'vendor', '')
     if field_value(host, 'type', '') in ('server', 'workstation'):
         ignore_vendors = [
-            'realtek', 'intel', 'proxmox', 'vmware', 'qemu', 'asrock',
+            'realtek', 'intel', 'vmware', 'qemu', 'asrock',
             'gigabyte', 'micro-star', 'azurewave', 'liteon', 'hon hai',
-            'shenzhen', 'microsoft'
+            'shenzhen'
         ]
         if any(ign in vendor_val.lower() for ign in ignore_vendors):
             vendor_val = ''

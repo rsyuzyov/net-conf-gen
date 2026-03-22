@@ -170,8 +170,7 @@ class AuthenticatedEnricher:
             info['os'] = normalize_os_name(info['os'])
 
         result.update(info)
-        if key_path:
-            result['key_path'] = key_path
+        result['key_path'] = key_path or ''
         result['scan_status'] = STATUS_COMPLETED
         self._append_auth_method(result, method)
         self._record_attempt(result, method, attempted_user or info.get('user', ''), 'success')
@@ -349,8 +348,11 @@ class AuthenticatedEnricher:
             return
 
         update_data = {
-            'auth_methods': list(self._field(host, 'auth_methods', [])),
-            'auth_attempts': list(self._field(host, 'auth_attempts', [])),
+            'auth_methods': [],
+            'auth_attempts': [],
+            'auth_method': '',
+            'user': '',
+            'key_path': '',
         }
 
         success = False

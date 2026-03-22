@@ -4,6 +4,7 @@ import os
 import logging
 import threading
 from datetime import datetime
+from src.constants import STATUS_COMPLETED
 from src.models import HostRecord
 from src.utils import ip_to_int
 
@@ -46,7 +47,7 @@ class Storage:
                 self._save()
                 self._dirty = False
 
-    def update_host(self, ip, info):
+    def update_host(self, ip, info, overwrite_protected=False):
         """Обновляет информацию о хосте. Не перезаписывает важные поля пустыми значениями."""
         with self._lock:
             if ip not in self.data:
@@ -55,7 +56,7 @@ class Storage:
             protected_fields = ['vendor', 'hostname', 'os', 'os_type', 'type', 'model']
 
             for key, value in info.items():
-                if key in protected_fields:
+                if key in protected_fields and not overwrite_protected:
                     existing_value = self.data[ip].get(key)
                     new_is_empty = value is None or (isinstance(value, str) and not value.strip())
                     existing_is_non_empty = existing_value and (not isinstance(existing_value, str) or existing_value.strip())
@@ -93,9 +94,10 @@ class Storage:
             for record in records:
                 base = record.to_dict()
                 previous = existing.get(record.ip, {})
-                for field in preserved_fields:
-                    if field in previous and previous[field] not in (None, '', [], {}):
-                        base[field] = previous[field]
+                if previous.get('scan_status') == STATUS_COMPLETED:
+                    for field in preserved_fields:
+                        if field in previous and previous[field] not in (None, '', [], {}):
+                            base[field] = previous[field]
                 new_data[record.ip] = base
                 new_data[record.ip]['last_updated'] = datetime.now().isoformat()
 

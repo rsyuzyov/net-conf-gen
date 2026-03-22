@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from src.constants import (
     STATUS_AUTH_AVAILABLE_NO_ACCESS,
@@ -25,7 +26,7 @@ class StubConnector:
         return self.response
 
 
-class TestEnricher(AuthenticatedEnricher):
+class StubEnricher(AuthenticatedEnricher):
     def __init__(self, storage, credentials, ssh_response=None, winrm_response=None, psexec_response=None):
         super().__init__(storage=storage, credentials=credentials, concurrency=1)
         self._ssh = StubConnector(ssh_response)
@@ -49,7 +50,7 @@ class EnrichmentTests(unittest.TestCase):
             })
             storage.flush()
 
-            enricher = TestEnricher(
+            enricher = StubEnricher(
                 storage=storage,
                 credentials=[{
                     'protocol': 'ssh',
@@ -87,7 +88,7 @@ class EnrichmentTests(unittest.TestCase):
             })
             storage.flush()
 
-            enricher = TestEnricher(
+            enricher = StubEnricher(
                 storage=storage,
                 credentials=[{
                     'protocol': 'winrm',
@@ -120,7 +121,7 @@ class EnrichmentTests(unittest.TestCase):
             })
             storage.flush()
 
-            enricher = TestEnricher(
+            enricher = StubEnricher(
                 storage=storage,
                 credentials=[{
                     'protocol': 'ssh',
@@ -159,7 +160,7 @@ class EnrichmentTests(unittest.TestCase):
             })
             storage.flush()
 
-            enricher = TestEnricher(
+            enricher = StubEnricher(
                 storage=storage,
                 credentials=[{
                     'protocol': 'winrm',
@@ -198,7 +199,7 @@ class EnrichmentTests(unittest.TestCase):
             })
             storage.flush()
 
-            enricher = TestEnricher(
+            enricher = StubEnricher(
                 storage=storage,
                 credentials=[{
                     'protocol': 'ssh',
@@ -221,6 +222,132 @@ class EnrichmentTests(unittest.TestCase):
             self.assertEqual('windows', host.os_type)
             self.assertEqual('workstation', host.type)
             self.assertEqual('Microsoft Windows 11 Pro', host.os)
+
+    def test_winrm_auth_fail_preserves_specific_error_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.60', {
+                'ip': '192.168.1.60',
+                'category': 'windows',
+                'type': 'server',
+                'os_type': 'windows',
+                'open_ports': [5985],
+                'services': ['WinRM'],
+                'scan_status': STATUS_DISCOVERED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'winrm',
+                    'accounts': [{'user': 'ag\\agent', 'password': 'secret'}],
+                }],
+                winrm_response={'auth_failed': True, 'error': 'Access is denied'},
+            )
+
+            enricher.enrich_host('192.168.1.60')
+
+            host = storage.get_host_record('192.168.1.60')
+            self.assertEqual('Access is denied', host.auth_attempts[0]['error'])
+
+    def test_force_rescan_replaces_previous_auth_runtime_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.70', {
+                'ip': '192.168.1.70',
+                'hostname': 'srv-app2',
+                'category': 'linux',
+                'type': 'server',
+                'os_type': 'linux',
+                'open_ports': [22],
+                'services': ['SSH'],
+                'scan_status': STATUS_COMPLETED,
+                'auth_method': 'ssh',
+                'auth_methods': ['ssh'],
+                'auth_attempts': [
+                    {'method': 'ssh', 'user': 'old-root', 'status': 'success', 'error': ''},
+                ],
+                'user': 'old-root',
+                'key_path': 'C:/keys/old',
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'ssh',
+                    'accounts': [{'user': 'new-root', 'password': 'secret'}],
+                }],
+                ssh_response={
+                    'success': True,
+                    'hostname': 'srv-app2',
+                    'os': 'Ubuntu 24.04',
+                    'auth_method': 'ssh',
+                    'user': 'new-root',
+                },
+            )
+
+            enricher.enrich_host('192.168.1.70', force=True)
+
+            host = storage.get_host_record('192.168.1.70')
+            self.assertEqual('new-root', host.user)
+            self.assertEqual('', host.key_path)
+            self.assertEqual(['ssh'], host.auth_methods)
+            self.assertEqual(1, len(host.auth_attempts))
+            self.assertEqual('new-root', host.auth_attempts[0]['user'])
+
+    def test_failed_rescan_clears_previous_successful_auth_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.80', {
+                'ip': '192.168.1.80',
+                'hostname': 'ws-old',
+                'category': 'windows',
+                'type': 'server',
+                'os_type': 'windows',
+                'open_ports': [5985],
+                'services': ['WinRM'],
+                'scan_status': STATUS_COMPLETED,
+                'auth_method': 'winrm',
+                'auth_methods': ['winrm'],
+                'auth_attempts': [
+                    {'method': 'winrm', 'user': 'old-admin', 'status': 'success', 'error': ''},
+                ],
+                'user': 'old-admin',
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'winrm',
+                    'accounts': [{'user': 'new-admin', 'password': 'bad'}],
+                }],
+                winrm_response={'auth_failed': True, 'error': 'Access is denied'},
+            )
+
+            enricher.enrich_host('192.168.1.80', force=True)
+
+            host = storage.get_host_record('192.168.1.80')
+            self.assertEqual(STATUS_AUTH_AVAILABLE_NO_ACCESS, host.scan_status)
+            self.assertEqual('', host.auth_method)
+            self.assertEqual('', host.user)
+            self.assertEqual('', host.key_path)
+            self.assertTrue(host.auth_methods)
+            self.assertTrue(host.auth_attempts)
+            self.assertNotIn('old-admin', [attempt['user'] for attempt in host.auth_attempts])
+            self.assertTrue(all(attempt['user'] != 'old-admin' for attempt in host.auth_attempts))
+
+
+class ReverseDnsDiscoveryTests(unittest.TestCase):
+    def test_reverse_dns_name_normalizes_primary_and_aliases(self):
+        with patch('src.utils.socket.gethostbyaddr', return_value=('srv-rds1.ag.local', ['srv-rds1'], ['192.168.88.26'])):
+            from src.utils import reverse_dns_name
+            hostname, hostnames = reverse_dns_name('192.168.88.26')
+
+        self.assertEqual('srv-rds1', hostname)
+        self.assertEqual(['srv-rds1.ag.local', 'srv-rds1'], hostnames)
 
 
 if __name__ == '__main__':

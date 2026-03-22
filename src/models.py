@@ -24,6 +24,9 @@ class HostRecord:
     auth_method: str = ''
     user: str = ''
     key_path: str = ''
+    kernel_version: str = ''
+    distribution: str = ''
+    success: bool = False
     scan_status: str = ''
     last_updated: str = ''
 
@@ -58,6 +61,9 @@ class HostRecord:
             auth_method=data.get('auth_method', ''),
             user=data.get('user', ''),
             key_path=data.get('key_path', ''),
+            kernel_version=data.get('kernel_version', ''),
+            distribution=data.get('distribution', ''),
+            success=bool(data.get('success', False)),
             scan_status=data.get('scan_status', ''),
             last_updated=data.get('last_updated', ''),
         )
@@ -89,6 +95,9 @@ class HostRecord:
             'auth_method': self.auth_method,
             'user': self.user,
             'key_path': self.key_path,
+            'kernel_version': self.kernel_version,
+            'distribution': self.distribution,
+            'success': self.success,
             'scan_status': self.scan_status,
             'last_updated': self.last_updated,
         }

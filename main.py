@@ -11,6 +11,7 @@ import yaml
 from src.config_wizard import create_config
 from src.discovery import NativeDiscovery
 from src.enrichment import AuthenticatedEnricher
+from src.virtualization_enrichment import VirtualizationEnricher
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def run_discovery(config, targets, exclusions):
 def main():
     parser = argparse.ArgumentParser(description="net-conf-gen - network inventory")
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
-    parser.add_argument('--step', choices=['discovery', 'scan', 'report', 'all'], default='all', help='Step to run')
+    parser.add_argument('--step', choices=['discovery', 'scan', 'virt', 'report', 'all'], default='all', help='Step to run')
     parser.add_argument('--force', action='store_true', help='Force enrichment of all hosts')
     parser.add_argument('--host', help='Scan specific host IP')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -114,8 +115,23 @@ def main():
             storage.flush()
             logger.info("Authenticated enrichment completed.")
 
+    if args.step in ['virt', 'all']:
+        logger.info("=== Stage 3: Virtualization Enrichment ===")
+        existing_hosts = list(storage.iter_host_records())
+        if not existing_hosts:
+            logger.warning("No hosts in storage. Run discovery first.")
+        else:
+            virt_ips = [args.host] if args.host else None
+            enricher = VirtualizationEnricher(
+                storage=storage,
+                credentials=config.get('credentials', []),
+            )
+            enricher.enrich_all(target_ips=virt_ips)
+            storage.flush()
+            logger.info("Virtualization enrichment completed.")
+
     if args.step in ['report', 'all']:
-        logger.info("=== Stage 3: Reporting ===")
+        logger.info("=== Stage 4: Reporting ===")
         from src.reporting import ReportGenerator
         reporter = ReportGenerator(storage, output_dir=output_dir, domain=domain, targets=targets)
         reporter.generate_all()

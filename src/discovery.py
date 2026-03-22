@@ -9,12 +9,15 @@ import subprocess
 from src.classification import classify_nmap_host
 from src.constants import STATUS_DISCOVERED
 from src.models import HostRecord
+from src.utils import reverse_dns_name
 
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = 0.5
 CONCURRENCY_LIMIT = 1000
+PTR_PORT_HINTS = {88, 135, 389, 445, 3389, 5985, 5986}
+PTR_SERVICE_HINTS = {'KERBEROS', 'RPC', 'LDAP', 'LDAPS', 'SMB', 'RDP', 'WINRM'}
 
 
 def load_port_config(config_path='ports.json'):
@@ -152,6 +155,11 @@ class NativeDiscovery:
                 service_details=result['service_details'],
                 mac=arp_table.get(result['ip'], ''),
             )
+            if self._should_resolve_ptr(result['open_ports'], result['services']):
+                hostname, hostnames = reverse_dns_name(result['ip'])
+                if hostname:
+                    record.hostname = hostname
+                    record.hostnames = hostnames
             classified = classify_nmap_host(record.to_dict())
             for key, value in classified.items():
                 if value:
@@ -181,3 +189,8 @@ class NativeDiscovery:
 
         logger.info("Native discovery found %s active hosts", len(records))
         return records
+    def _should_resolve_ptr(self, open_ports, services):
+        if PTR_PORT_HINTS & set(open_ports or []):
+            return True
+        service_names = {str(service).upper() for service in (services or [])}
+        return bool(PTR_SERVICE_HINTS & service_names)

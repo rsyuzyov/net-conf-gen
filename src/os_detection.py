@@ -71,7 +71,27 @@ def windows_name_from_kernel(kernel_version, is_server=False):
     """Определяет имя ОС Windows по kernel_version (major.minor.build)."""
     if not kernel_version:
         return ''
-    parts = str(kernel_version).split('.')
+    raw = str(kernel_version).strip()
+    if raw.isdigit():
+        try:
+            build = int(raw)
+        except ValueError:
+            return ''
+        if build in _WINDOWS_10_BUILD_MAP:
+            desktop, server = _WINDOWS_10_BUILD_MAP[build]
+            if is_server and server:
+                return server
+            return desktop or server or f'Windows (build {build})'
+        known_builds = sorted(_WINDOWS_10_BUILD_MAP.keys())
+        closest = min(known_builds, key=lambda b: abs(b - build))
+        if abs(closest - build) <= 500:
+            desktop, server = _WINDOWS_10_BUILD_MAP[closest]
+            if is_server and server:
+                return server
+            return desktop or server or f'Windows (build {build})'
+        return f'Windows (build {build})'
+
+    parts = raw.split('.')
     if len(parts) < 2:
         return ''
     major_minor = f"{parts[0]}.{parts[1]}"
