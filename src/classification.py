@@ -11,7 +11,7 @@ NETWORK_PORTS = {53, 161, 8080, 8443, 8728, 8729, 8291}
 PRINTER_PORTS = {515, 631, 9100}
 CAMERA_PORTS = {554, 8554, 8899, 34567}
 LINUX_MARKERS = ('linux', 'unix', 'debian', 'ubuntu', 'centos', 'rocky', 'almalinux', 'synology', 'qnap')
-NETWORK_MARKERS = ('openwrt', 'router', 'switch', 'ubiquiti', 'cisco', 'kerio', 'tp-link')
+NETWORK_MARKERS = ('openwrt', 'router', 'switch', 'ubiquiti', 'cisco', 'kerio', 'tp-link', 'nag')
 WINDOWS_MARKERS = ('windows', 'microsoft rpc', 'microsoft-ds', 'winrm', 'wsman', 'rdp')
 CAMERA_MARKERS = ('camera', 'hikvision', 'dahua', 'onvif', 'xmeye', 'rtsp')
 PRINTER_MARKERS = (
@@ -25,6 +25,8 @@ PRINTER_MARKERS = (
     'ricoh',
     'brother',
     'canon',
+    'imagerunner',
+    'epson',
     'lexmark',
     'pantum',
     'phaser',
@@ -42,8 +44,22 @@ def _looks_like_printer(text, ports):
     return has_printer_port or _contains_any(text, PRINTER_MARKERS)
 
 
+def _looks_like_mikrotik(text, ports):
+    if {8728, 8729} & ports:
+        return True
+    if 'routeros' not in text and 'mikrotik' not in text:
+        return False
+    if _looks_like_printer(text, ports):
+        return False
+    return True
+
+
 def _network_model_from_text(text):
-    return re.search(r'(TL-[A-Z0-9-]+|Archer\s+[A-Z0-9]+|RT-[A-Z0-9-]+|Deco\s+[A-Z0-9]+)', text, re.IGNORECASE)
+    return re.search(
+        r'(TL-[A-Z0-9-]+|Archer\s+[A-Z0-9]+|RT-[A-Z0-9-]+|Deco\s+[A-Z0-9]+|DGN\d{3,5}[A-Za-z0-9-]*)',
+        text,
+        re.IGNORECASE,
+    )
 
 
 def _camera_model_from_text(text):
@@ -58,7 +74,7 @@ def classify_host(host):
     vendor = infer_vendor_from_host(host, text)
 
     category = CATEGORY_UNKNOWN
-    if {8728, 8729} & ports or 'mikrotik' in text or 'routeros' in text:
+    if _looks_like_mikrotik(text, ports):
         category = 'mikrotik'
     elif _contains_any(text, ('nanokvm', 'ip-kvm', 'pikvm')):
         category = 'ipkvm'
@@ -81,6 +97,15 @@ def classify_host(host):
     os_type = ''
     host_type = TYPE_UNKNOWN
     normalized_os = os_name
+
+    if category != 'mikrotik' and normalized_os == 'MikroTik RouterOS':
+        normalized_os = ''
+    if category != 'printer' and normalized_os == 'Printer':
+        normalized_os = ''
+    if category != 'camera' and normalized_os == 'IP Camera':
+        normalized_os = ''
+    if category != 'network' and normalized_os == 'Network Equipment':
+        normalized_os = ''
 
     if category == 'windows':
         os_type = 'windows'

@@ -7,6 +7,7 @@ from src.constants import (
     STATUS_AUTH_AVAILABLE_NO_ACCESS,
     STATUS_COMPLETED,
     STATUS_SCANNED,
+    STATUS_WEB_COMPLETED,
     TYPE_UNKNOWN,
 )
 from src.credentials import CredentialManager
@@ -378,7 +379,8 @@ class AuthenticatedEnricher:
         if update_data.get('auth_methods'):
             update_data['scan_status'] = STATUS_AUTH_AVAILABLE_NO_ACCESS
         else:
-            update_data['scan_status'] = STATUS_SCANNED
+            previous_status = self._field(host, 'scan_status', '')
+            update_data['scan_status'] = STATUS_WEB_COMPLETED if previous_status == STATUS_WEB_COMPLETED else STATUS_SCANNED
 
         self._finalize_without_auth(host, update_data)
         self.storage.update_host(ip, update_data)

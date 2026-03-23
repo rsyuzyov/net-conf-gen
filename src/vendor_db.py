@@ -43,12 +43,15 @@ TEXT_VENDOR_PATTERNS = {
     'tp-link': 'TP-Link',
     'openwrt': 'OpenWrt',
     'ubiquiti': 'Ubiquiti',
+    'netgear': 'Netgear',
     'hikvision': 'Hikvision',
     'dahua': 'Dahua',
     'xmeye': 'XMEye',
     'xmsecu': 'XMEye',
     'web viewer': 'XMEye',
     'canon': 'Canon',
+    'imagerunner': 'Canon',
+    'nanokvm': 'NanoKVM',
     'lexmark': 'Lexmark',
     'pantum': 'Pantum',
     'phaser': 'Xerox',
@@ -56,6 +59,7 @@ TEXT_VENDOR_PATTERNS = {
     'xerox': 'Xerox',
     'ricoh': 'Ricoh',
     'brother': 'Brother',
+    'epson': 'Epson',
     'konica': 'Konica Minolta',
     'synology': 'Synology',
     'qnap': 'QNAP',
@@ -63,6 +67,8 @@ TEXT_VENDOR_PATTERNS = {
     'cisco': 'Cisco',
     'kerio': 'Kerio',
     'xiaomi': 'Xiaomi',
+    'miwifi': 'Xiaomi',
+    '小米路由器': 'Xiaomi',
 }
 
 # ===== IOT / Mobile Vendors that should not be classified as servers =====
@@ -77,6 +83,7 @@ HTTP_TITLE_VENDOR_MAP = {
     'laserjet': ('HP', None),
     'hp ': ('HP', None),
     'canon': ('Canon', None),
+    'imagerunner': ('Canon', None),
     'epson': ('Epson', None),
     'brother': ('Brother', None),
     'lexmark': ('Lexmark', None),
@@ -90,20 +97,33 @@ HTTP_TITLE_VENDOR_MAP = {
     'synology': ('Synology', None),
     'qnap': ('QNAP', None),
     'mikrotik': ('MikroTik', None),
+    'netgear': ('Netgear', None),
     'hikvision': ('Hikvision', None),
     'dahua': ('Dahua', None),
     'ubiquiti': ('Ubiquiti', None),
     'unifi': ('Ubiquiti', None),
     'kerio': ('Kerio', None),
+    'nanokvm': ('NanoKVM', 'NanoKVM'),
+    '小米路由器': ('Xiaomi', 'Mi Router'),
 }
 
 # ===== Server indicator ports =====
 SERVER_PORTS = {88, 389, 636, 1540, 1541, 1560, 1561, 2049, 5985}
 
-CANON_MODEL_RE = re.compile(r'\b(MF\d{3,4}\s+Series)\b', re.IGNORECASE)
+CANON_MODEL_RE = re.compile(
+    r'\b('
+    r'MF\d{3,4}(?:/\d{3})?\s+Series'
+    r'|LBP\d{3,4}'
+    r'|imageRUNNER\s*\d+[A-Za-z]*\s*series'
+    r')\b',
+    re.IGNORECASE,
+)
+HP_MODEL_RE = re.compile(r'\bHP\s+(LaserJet(?:\s+Professional)?(?:\s+(?!\d{1,3}(?:\.\d{1,3}){3}\b)[A-Z0-9-]+){1,3})\b', re.IGNORECASE)
+BROTHER_MODEL_RE = re.compile(r'\b((?:DCP|MFC|HL|ADS|PT|QL)-[A-Z0-9]+(?:\s+series)?)\b', re.IGNORECASE)
 LEXMARK_MODEL_RE = re.compile(r'\b(?:Lexmark\s+)?((?:MX|MS|CS|CX|XM|C|M|B)\d{3,4}[A-Za-z]{0,4})\b')
 XEROX_MODEL_RE = re.compile(r'\b(Phaser\s+[A-Z0-9-]+)\b', re.IGNORECASE)
 PANTUM_MODEL_RE = re.compile(r'\b((?:BP|BM|CM|CP|M|P)\d{4,5}[A-Z]{0,4})\b')
+NETGEAR_MODEL_RE = re.compile(r'\bNETGEAR(?:\s+Router)?\s+([A-Z]{2,5}\d{3,5}[A-Za-z0-9-]*)\b', re.IGNORECASE)
 
 
 def normalize_mac_vendor(raw_vendor):
@@ -151,12 +171,55 @@ def collect_host_text(host):
 
 def infer_vendor_from_host(host, text=None):
     """Определяет normalized vendor по MAC и текстовым сигналам."""
+    text = text if text is not None else collect_host_text(host)
+    ports = set(host.get('open_ports', []) or [])
+    category = str(host.get('category', '') or '').lower()
+    host_type = str(host.get('type', '') or '').lower()
+    has_camera_shape = category == 'camera' or host_type == 'camera' or 554 in ports
+    nas_text_chunks = [
+        str(host.get('hostname', '') or ''),
+        str(host.get('os', '') or ''),
+    ]
+    for probe in (host.get('web_probes') or {}).values():
+        if not isinstance(probe, dict):
+            continue
+        nas_text_chunks.extend([
+            str(probe.get('title', '') or ''),
+            str(probe.get('server', '') or ''),
+            str(probe.get('location', '') or ''),
+            str(probe.get('content_type', '') or ''),
+        ])
+    nas_text = ' '.join(nas_text_chunks).lower()
+    strong_nas_signal = any(
+        signal in nas_text
+        for signal in (
+            'diskstation',
+            'disk station',
+            'synology dsm',
+            'web station',
+            'qnap',
+            'qts',
+            'qumagie',
+        )
+    )
     vendor = normalize_mac_vendor(host.get('vendor', ''))
     if vendor:
-        return vendor
+        if not (vendor in ('Synology', 'QNAP') and has_camera_shape and not strong_nas_signal):
+            return vendor
 
-    text = text if text is not None else collect_host_text(host)
+    for probe in (host.get('web_probes') or {}).values():
+        if not isinstance(probe, dict):
+            continue
+        title_vendor, _ = detect_vendor_from_http_title(str(probe.get('title', '') or ''))
+        if title_vendor:
+            return title_vendor
+        realm_vendor, _ = detect_vendor_from_http_title(str(probe.get('www_authenticate', '') or ''))
+        if realm_vendor:
+            return realm_vendor
+
     for pattern, normalized in TEXT_VENDOR_PATTERNS.items():
+        if normalized in ('Synology', 'QNAP') and has_camera_shape and not strong_nas_signal:
+            continue
         if pattern in text:
             return normalized
     return ''
@@ -215,6 +278,14 @@ def extract_model_from_web_text(vendor, probe):
             match = CANON_MODEL_RE.search(value)
             if match:
                 return _clean_model(match.group(1))
+        elif vendor == 'HP':
+            match = HP_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
+        elif vendor == 'Brother':
+            match = BROTHER_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
         elif vendor == 'Lexmark':
             match = LEXMARK_MODEL_RE.search(value)
             if match:
@@ -225,6 +296,10 @@ def extract_model_from_web_text(vendor, probe):
                 return _clean_model(match.group(1))
         elif vendor == 'Pantum':
             match = PANTUM_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
+        elif vendor == 'Netgear':
+            match = NETGEAR_MODEL_RE.search(value)
             if match:
                 return _clean_model(match.group(1))
 
@@ -305,7 +380,7 @@ def determine_vendor_model(update_data, host_info):
             if extracted_model:
                 model = extracted_model
 
-        if auth_scheme == 'basic' and not model:
+        if auth_scheme == 'basic' and probe.get('scheme') in ('http', 'https') and not model:
             model = 'HTTP Basic Auth'
 
     # --- 2. OS / hostname ---

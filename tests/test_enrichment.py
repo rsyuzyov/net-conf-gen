@@ -6,6 +6,7 @@ from src.constants import (
     STATUS_AUTH_AVAILABLE_NO_ACCESS,
     STATUS_COMPLETED,
     STATUS_DISCOVERED,
+    STATUS_WEB_COMPLETED,
 )
 from src.enrichment import AuthenticatedEnricher
 from src.storage import Storage
@@ -338,6 +339,39 @@ class EnrichmentTests(unittest.TestCase):
             self.assertTrue(host.auth_attempts)
             self.assertNotIn('old-admin', [attempt['user'] for attempt in host.auth_attempts])
             self.assertTrue(all(attempt['user'] != 'old-admin' for attempt in host.auth_attempts))
+
+    def test_failed_auth_does_not_downgrade_existing_web_completed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.90', {
+                'ip': '192.168.1.90',
+                'open_ports': [80, 9100],
+                'services': ['HTTP', 'Printer'],
+                'category': 'printer',
+                'type': 'printer',
+                'os_type': 'linux',
+                'os': 'Printer',
+                'vendor': 'HP',
+                'model': 'LaserJet 400 M401dn',
+                'scan_status': STATUS_WEB_COMPLETED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'ssh',
+                    'accounts': [{'user': 'root', 'password': 'bad'}],
+                }],
+                ssh_response=None,
+            )
+
+            enricher.enrich_host('192.168.1.90')
+
+            host = storage.get_host_record('192.168.1.90')
+            self.assertEqual(STATUS_WEB_COMPLETED, host.scan_status)
+            self.assertEqual('HP', host.vendor)
+            self.assertEqual('LaserJet 400 M401dn', host.model)
 
 
 class ReverseDnsDiscoveryTests(unittest.TestCase):
