@@ -45,7 +45,13 @@ TEXT_VENDOR_PATTERNS = {
     'ubiquiti': 'Ubiquiti',
     'hikvision': 'Hikvision',
     'dahua': 'Dahua',
+    'xmeye': 'XMEye',
+    'xmsecu': 'XMEye',
+    'web viewer': 'XMEye',
     'canon': 'Canon',
+    'lexmark': 'Lexmark',
+    'pantum': 'Pantum',
+    'phaser': 'Xerox',
     'kyocera': 'Kyocera',
     'xerox': 'Xerox',
     'ricoh': 'Ricoh',
@@ -73,6 +79,9 @@ HTTP_TITLE_VENDOR_MAP = {
     'canon': ('Canon', None),
     'epson': ('Epson', None),
     'brother': ('Brother', None),
+    'lexmark': ('Lexmark', None),
+    'pantum': ('Pantum', None),
+    'phaser': ('Xerox', None),
     'xerox': ('Xerox', None),
     'ricoh': ('Ricoh', None),
     'konica': ('Konica Minolta', None),
@@ -90,6 +99,11 @@ HTTP_TITLE_VENDOR_MAP = {
 
 # ===== Server indicator ports =====
 SERVER_PORTS = {88, 389, 636, 1540, 1541, 1560, 1561, 2049, 5985}
+
+CANON_MODEL_RE = re.compile(r'\b(MF\d{3,4}\s+Series)\b', re.IGNORECASE)
+LEXMARK_MODEL_RE = re.compile(r'\b(?:Lexmark\s+)?((?:MX|MS|CS|CX|XM|C|M|B)\d{3,4}[A-Za-z]{0,4})\b')
+XEROX_MODEL_RE = re.compile(r'\b(Phaser\s+[A-Z0-9-]+)\b', re.IGNORECASE)
+PANTUM_MODEL_RE = re.compile(r'\b((?:BP|BM|CM|CP|M|P)\d{4,5}[A-Z]{0,4})\b')
 
 
 def normalize_mac_vendor(raw_vendor):
@@ -173,8 +187,48 @@ def detect_vendor_from_http_title(title):
     title_lower = title.lower()
     for kw, (vendor, model) in HTTP_TITLE_VENDOR_MAP.items():
         if kw in title_lower:
-            return vendor, model or title
+            return vendor, model
     return None, None
+
+
+def _clean_model(model):
+    if not model:
+        return ''
+    cleaned = re.sub(r'\s{2,}', ' ', str(model)).strip(' -:\t\r\n')
+    return cleaned.strip()
+
+
+def extract_model_from_web_text(vendor, probe):
+    if not vendor or not isinstance(probe, dict):
+        return ''
+
+    http_title = str(probe.get('title', '')).strip()
+    tls_subject = str(probe.get('tls_subject', '')).strip()
+    tls_issuer = str(probe.get('tls_issuer', '')).strip()
+    location = str(probe.get('location', '')).strip()
+    candidates = [http_title, tls_subject, tls_issuer, location]
+
+    for value in candidates:
+        if not value:
+            continue
+        if vendor == 'Canon':
+            match = CANON_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
+        elif vendor == 'Lexmark':
+            match = LEXMARK_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
+        elif vendor == 'Xerox':
+            match = XEROX_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
+        elif vendor == 'Pantum':
+            match = PANTUM_MODEL_RE.search(value)
+            if match:
+                return _clean_model(match.group(1))
+
+    return ''
 
 
 def _collect_web_candidates(update_data, host_info):
@@ -244,6 +298,12 @@ def determine_vendor_model(update_data, host_info):
                 vendor = vendor or title_v
             if title_m:
                 model = model or title_m
+
+        candidate_vendor = vendor or update_data.get('vendor', '') or host_info.get('vendor', '')
+        if candidate_vendor and not model:
+            extracted_model = extract_model_from_web_text(candidate_vendor, probe)
+            if extracted_model:
+                model = extracted_model
 
         if auth_scheme == 'basic' and not model:
             model = 'HTTP Basic Auth'

@@ -8,10 +8,17 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.classification import classify_host
-from src.constants import STATUS_COMPLETED, STATUS_VIRTUALIZATION_COMPLETED, STATUS_WEB_COMPLETED
+from src.constants import (
+    STATUS_COMPLETED,
+    STATUS_DISCOVERED,
+    STATUS_SCANNED,
+    STATUS_VIRTUALIZATION_COMPLETED,
+    STATUS_WEB_COMPLETED,
+)
 from src.vendor_db import determine_vendor_model
 
 
@@ -32,6 +39,7 @@ WEB_PORT_SCHEMES = {
     10000: 'https',
     8291: 'http',
     8728: 'http',
+    8899: 'http',
 }
 
 TITLE_RE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
@@ -267,6 +275,48 @@ class WebProbeEnricher:
                 except Exception:
                     pass
 
+    def _post_json(self, url, payload):
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                'User-Agent': 'net-conf-gen/1.0',
+                'Content-Type': 'text/plain',
+            },
+            method='POST',
+        )
+        response = None
+        try:
+            opener = self._https_opener if url.startswith('https://') else self._http_opener
+            response = opener.open(request, timeout=self.timeout)
+            body = response.read(20000).decode('utf-8', errors='ignore')
+            return {
+                'status_code': getattr(response, 'status', 200),
+                'headers': response.headers,
+                'body': body,
+                'final_url': response.geturl() or url,
+            }
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read(20000).decode('utf-8', errors='ignore')
+            except Exception:
+                body = ''
+            return {
+                'status_code': exc.code,
+                'headers': exc.headers,
+                'body': body,
+                'final_url': exc.geturl() or url,
+            }
+        except Exception as exc:
+            logger.debug("Targeted web POST failed for %s: %s", url, exc)
+            return None
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
     def _fetch_targeted_probe_metadata(self, ip, probe):
         if not probe.get('reachable'):
             return {}
@@ -284,7 +334,32 @@ class WebProbeEnricher:
         ]).lower()
 
         if 'kyocera' not in root_text and 'command center rx' not in root_text and 'km-mfp-http' not in root_text:
-            return {}
+            plugin_response = None
+            if probe.get('port') == 8899 or 'web viewer' in root_text:
+                plugin_response = self._open_url(f"{base_url}/pluginVersion.js")
+            plugin_text = (plugin_response or {}).get('body', '').lower()
+            if 'web viewer' not in root_text and 'xmsecu.com' not in plugin_text and 'version_web' not in plugin_text:
+                return {}
+
+            metadata = {
+                'device_vendor': 'XMEye',
+                'device_family': 'web_viewer',
+                'device_ui': 'Web Viewer',
+            }
+            prelogin = self._post_json(
+                f"{base_url}/cgi-bin/login.cgi",
+                {'Name': 'GetPreLoginInfo'},
+            )
+            if prelogin:
+                try:
+                    prelogin_data = json.loads(prelogin.get('body', '') or '{}')
+                except json.JSONDecodeError:
+                    prelogin_data = {}
+                if prelogin_data.get('Language'):
+                    metadata['device_language'] = str(prelogin_data['Language']).strip()
+                if prelogin_data.get('TCPPort'):
+                    metadata['device_tcp_port'] = prelogin_data['TCPPort']
+            return metadata
 
         model_url = (
             f"{base_url}/js/jssrc/model/startwlm/Start_Wlm.model.htm"
@@ -346,6 +421,12 @@ class WebProbeEnricher:
         final_type = update.get('type') or merged.get('type', '')
         final_vendor = update.get('vendor') or merged.get('vendor', '')
         final_model = update.get('model') or merged.get('model', '')
+        camera_family = ''
+        for probe in probes:
+            family = str(probe.get('device_family', '')).strip()
+            if family:
+                camera_family = family
+                break
         if (
             status not in (STATUS_COMPLETED, STATUS_VIRTUALIZATION_COMPLETED)
             and final_type in ('printer', 'ipkvm')
@@ -353,6 +434,17 @@ class WebProbeEnricher:
             and final_model
         ):
             update['scan_status'] = STATUS_WEB_COMPLETED
+        elif (
+            status not in (STATUS_COMPLETED, STATUS_VIRTUALIZATION_COMPLETED)
+            and final_type == 'camera'
+            and final_vendor
+            and camera_family in ('web_viewer',)
+        ):
+            update['scan_status'] = STATUS_WEB_COMPLETED
+        elif status == STATUS_WEB_COMPLETED:
+            # Drop stale web-only completion when reclassification no longer has enough confidence.
+            has_auth_context = bool(host.auth_methods or host.auth_attempts or host.auth_method)
+            update['scan_status'] = STATUS_SCANNED if has_auth_context else STATUS_DISCOVERED
         self.storage.update_host(host.ip, update, overwrite_protected=True)
 
     def probe_host(self, ip):

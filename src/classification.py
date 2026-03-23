@@ -14,11 +14,32 @@ LINUX_MARKERS = ('linux', 'unix', 'debian', 'ubuntu', 'centos', 'rocky', 'almali
 NETWORK_MARKERS = ('openwrt', 'router', 'switch', 'ubiquiti', 'cisco', 'kerio', 'tp-link')
 WINDOWS_MARKERS = ('windows', 'microsoft rpc', 'microsoft-ds', 'winrm', 'wsman', 'rdp')
 CAMERA_MARKERS = ('camera', 'hikvision', 'dahua', 'onvif', 'xmeye', 'rtsp')
-PRINTER_MARKERS = ('printer', 'jetdirect', 'laserjet', 'ipps', 'ipp', 'kyocera', 'xerox', 'ricoh', 'brother')
+PRINTER_MARKERS = (
+    'printer',
+    'jetdirect',
+    'laserjet',
+    'ipps',
+    'ipp',
+    'kyocera',
+    'xerox',
+    'ricoh',
+    'brother',
+    'canon',
+    'lexmark',
+    'pantum',
+    'phaser',
+)
 
 
 def _contains_any(text, patterns):
     return any(pattern in text for pattern in patterns)
+
+
+def _looks_like_printer(text, ports):
+    if 8006 in ports or 'proxmox' in text:
+        return False
+    has_printer_port = bool(PRINTER_PORTS & ports and not ({22, 135, 445} & ports))
+    return has_printer_port or _contains_any(text, PRINTER_MARKERS)
 
 
 def _network_model_from_text(text):
@@ -43,7 +64,7 @@ def classify_host(host):
         category = 'ipkvm'
     elif _contains_any(text, CAMERA_MARKERS) or ({554} & ports and any(v in (vendor or '').lower() for v in ('hikvision', 'dahua'))):
         category = 'camera'
-    elif (PRINTER_PORTS & ports and not ({22, 135, 445} & ports)) or _contains_any(text, PRINTER_MARKERS):
+    elif _looks_like_printer(text, ports):
         category = 'printer'
     elif _contains_any(text, NETWORK_MARKERS) or NETWORK_PORTS & ports == {8728} or NETWORK_PORTS & ports == {8729}:
         category = 'network'
