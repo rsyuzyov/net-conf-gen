@@ -22,6 +22,20 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def _host_http_titles(host_info):
+    titles = []
+    for probe in (host_info.get('web_probes') or {}).values():
+        if not isinstance(probe, dict):
+            continue
+        title = str(probe.get('title', '')).strip()
+        if title:
+            titles.append(title)
+    legacy_title = str(host_info.get('http_title', '')).strip()
+    if legacy_title:
+        titles.append(legacy_title)
+    return titles
+
+
 def load_default_credentials(config_path='default_credentials.json'):
     """Загружает базу дефолтных учётных данных."""
     if not os.path.isabs(config_path):
@@ -81,8 +95,8 @@ def _match_entry(entry, host_info):
     
     # Проверяем http_title_contains
     if 'http_title_contains' in match_rules:
-        http_title = host_info.get('http_title', '').lower()
-        if match_rules['http_title_contains'].lower() not in http_title:
+        titles_text = ' '.join(_host_http_titles(host_info)).lower()
+        if match_rules['http_title_contains'].lower() not in titles_text:
             return False
     
     return True

@@ -1,7 +1,7 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from src.classification import classify_nmap_host
+from src.classification import classify_host
 from src.constants import (
     CATEGORY_UNKNOWN,
     STATUS_AUTH_AVAILABLE_NO_ACCESS,
@@ -83,7 +83,17 @@ class AuthenticatedEnricher:
                 details.get('version', ''),
                 details.get('extrainfo', ''),
             ])
-            parts.extend(details.get('scripts', {}).values())
+        for probe in self._field(host, 'web_probes', {}).values():
+            parts.extend([
+                probe.get('server', ''),
+                probe.get('title', ''),
+                probe.get('location', ''),
+                probe.get('content_type', ''),
+                probe.get('auth_scheme', ''),
+                probe.get('tls_subject', ''),
+                probe.get('tls_issuer', ''),
+                'login-page' if probe.get('is_login_page') else '',
+            ])
         return ' '.join(str(part) for part in parts if part).lower()
 
     def _protocol_order(self, host):
@@ -312,7 +322,7 @@ class AuthenticatedEnricher:
                     final['os'] = 'Windows Server' if final['type'] == 'server' else 'Windows'
                 return final
 
-        discovery_view = classify_nmap_host(merged)
+        discovery_view = classify_host(merged)
         if discovery_view.get('category', CATEGORY_UNKNOWN) != CATEGORY_UNKNOWN:
             final.update({
                 'category': discovery_view.get('category', CATEGORY_UNKNOWN),
@@ -333,7 +343,7 @@ class AuthenticatedEnricher:
     def _finalize_without_auth(self, host, update_data):
         merged = host.to_dict() if isinstance(host, HostRecord) else dict(host)
         merged.update(update_data)
-        discovery_view = classify_nmap_host(merged)
+        discovery_view = classify_host(merged)
         for key in ('category', 'os_type', 'type', 'os'):
             value = discovery_view.get(key)
             if value:

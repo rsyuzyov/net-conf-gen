@@ -29,7 +29,7 @@ def _camera_model_from_text(text):
     return re.search(r'(i?DS-[A-Z0-9-]+|DH-[A-Z0-9-]+|IPC-[A-Z0-9-]+)', text, re.IGNORECASE)
 
 
-def classify_nmap_host(host):
+def classify_host(host):
     ports = set(host.get('open_ports', []))
     text = collect_host_text(host)
     hostname = host.get('hostname', '')

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.constants import STATUS_COMPLETED
+from src.constants import STATUS_COMPLETED, STATUS_VIRTUALIZATION_COMPLETED, STATUS_WEB_COMPLETED
 from src.reporting import ReportGenerator
 from src.storage import Storage
 
@@ -45,6 +45,52 @@ class ReportingTests(unittest.TestCase):
             self.assertIn('Scan Status', html_report)
             self.assertIn(STATUS_COMPLETED, html_report)
             self.assertEqual(STATUS_COMPLETED, json_report['192.168.1.10']['scan_status'])
+
+    def test_reporting_highlights_virtualization_completed_like_completed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.29', {
+                'ip': '192.168.1.29',
+                'hostname': 'docker1',
+                'type': 'server',
+                'category': 'linux',
+                'os_type': 'linux',
+                'os': 'Debian GNU/Linux 12 (bookworm)',
+                'scan_status': STATUS_VIRTUALIZATION_COMPLETED,
+            })
+            storage.flush()
+
+            reporter = ReportGenerator(storage, output_dir=tmpdir, domain='example.local', targets=['192.168.1.0/24'])
+            reporter.generate_all()
+
+            html_report = Path(tmpdir, 'scan_report.html').read_text(encoding='utf-8')
+
+            self.assertIn('.scan-virtualization-completed', html_report)
+            self.assertIn('class="host-linux scan-virtualization-completed"', html_report)
+
+    def test_reporting_highlights_web_completed_like_completed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.31', {
+                'ip': '192.168.1.31',
+                'hostname': 'KM2F6870',
+                'type': 'printer',
+                'category': 'printer',
+                'os_type': 'linux',
+                'os': 'Printer',
+                'vendor': 'Kyocera',
+                'model': 'ECOSYS M2135dn',
+                'scan_status': STATUS_WEB_COMPLETED,
+            })
+            storage.flush()
+
+            reporter = ReportGenerator(storage, output_dir=tmpdir, domain='example.local', targets=['192.168.1.0/24'])
+            reporter.generate_all()
+
+            html_report = Path(tmpdir, 'scan_report.html').read_text(encoding='utf-8')
+
+            self.assertIn('.scan-web-completed', html_report)
+            self.assertIn('class="host-linux scan-web-completed"', html_report)
 
 
 if __name__ == '__main__':

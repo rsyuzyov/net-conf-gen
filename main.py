@@ -12,6 +12,7 @@ from src.config_wizard import create_config
 from src.discovery import NativeDiscovery
 from src.enrichment import AuthenticatedEnricher
 from src.virtualization_enrichment import VirtualizationEnricher
+from src.web_probe import WebProbeEnricher
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def run_discovery(config, targets, exclusions):
 def main():
     parser = argparse.ArgumentParser(description="net-conf-gen - network inventory")
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
-    parser.add_argument('--step', choices=['discovery', 'scan', 'virt', 'report', 'all'], default='all', help='Step to run')
+    parser.add_argument('--step', choices=['discovery', 'web', 'scan', 'virt', 'report', 'all'], default='all', help='Step to run')
     parser.add_argument('--force', action='store_true', help='Force enrichment of all hosts')
     parser.add_argument('--host', help='Scan specific host IP')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -98,6 +99,21 @@ def main():
         logger.info("Total active hosts found: %s", len(hosts))
         storage.replace_discovery_snapshot(hosts)
         storage.flush()
+
+    if args.step in ['web', 'all']:
+        logger.info("=== Stage 1.5: Web Probe ===")
+        existing_hosts = list(storage.iter_host_records())
+        if not existing_hosts:
+            logger.warning("No hosts in storage. Run discovery first.")
+        else:
+            target_ips = [args.host] if args.host else None
+            enricher = WebProbeEnricher(
+                storage=storage,
+                concurrency=config.get('concurrency', 10),
+            )
+            enricher.enrich_all(target_ips=target_ips)
+            storage.flush()
+            logger.info("Web probe completed.")
 
     if args.step in ['scan', 'all']:
         logger.info("=== Stage 2: Authenticated Enrichment ===")

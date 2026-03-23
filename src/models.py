@@ -9,6 +9,7 @@ class HostRecord:
     open_ports: list[int] = field(default_factory=list)
     services: list[str] = field(default_factory=list)
     service_details: dict[int, dict] = field(default_factory=dict)
+    web_probes: dict[int, dict] = field(default_factory=dict)
     hostnames: list[str] = field(default_factory=list)
     hostname: str = ''
     mac: str = ''
@@ -18,7 +19,6 @@ class HostRecord:
     type: str = TYPE_UNKNOWN
     category: str = CATEGORY_UNKNOWN
     model: str = ''
-    scripts: dict[str, str] = field(default_factory=dict)
     auth_methods: list[str] = field(default_factory=list)
     auth_attempts: list[dict] = field(default_factory=list)
     auth_method: str = ''
@@ -41,11 +41,21 @@ class HostRecord:
                 normalized_key = key
             normalized_service_details[normalized_key] = value
 
+        web_probes = data.get('web_probes', {}) or {}
+        normalized_web_probes = {}
+        for key, value in web_probes.items():
+            try:
+                normalized_key = int(key)
+            except (TypeError, ValueError):
+                normalized_key = key
+            normalized_web_probes[normalized_key] = value
+
         return cls(
             ip=data['ip'],
             open_ports=list(data.get('open_ports', [])),
             services=list(data.get('services', [])),
             service_details=normalized_service_details,
+            web_probes=normalized_web_probes,
             hostnames=list(data.get('hostnames', [])),
             hostname=data.get('hostname', ''),
             mac=data.get('mac', ''),
@@ -55,7 +65,6 @@ class HostRecord:
             type=data.get('type', TYPE_UNKNOWN),
             category=data.get('category', CATEGORY_UNKNOWN),
             model=data.get('model', ''),
-            scripts=dict(data.get('scripts', {})),
             auth_methods=list(data.get('auth_methods', [])),
             auth_attempts=list(data.get('auth_attempts', [])),
             auth_method=data.get('auth_method', ''),
@@ -80,6 +89,7 @@ class HostRecord:
             'open_ports': list(self.open_ports),
             'services': list(self.services),
             'service_details': dict(self.service_details),
+            'web_probes': dict(self.web_probes),
             'hostnames': list(self.hostnames),
             'hostname': self.hostname,
             'mac': self.mac,
@@ -89,7 +99,6 @@ class HostRecord:
             'type': self.type,
             'category': self.category,
             'model': self.model,
-            'scripts': dict(self.scripts),
             'auth_methods': list(self.auth_methods),
             'auth_attempts': list(self.auth_attempts),
             'auth_method': self.auth_method,

@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 
-from src.classification import classify_nmap_host
+from src.classification import classify_host
 from src.constants import STATUS_DISCOVERED
 from src.models import HostRecord
 from src.utils import reverse_dns_name
@@ -102,7 +102,6 @@ class NativeDiscovery:
                 'version': '',
                 'extrainfo': '',
                 'tunnel': '',
-                'scripts': {},
             }
 
         if not open_ports:
@@ -160,7 +159,7 @@ class NativeDiscovery:
                 if hostname:
                     record.hostname = hostname
                     record.hostnames = hostnames
-            classified = classify_nmap_host(record.to_dict())
+            classified = classify_host(record.to_dict())
             for key, value in classified.items():
                 if value:
                     setattr(record, key, value)
@@ -180,7 +179,7 @@ class NativeDiscovery:
                 ip=arp_ip,
                 mac=mac,
             )
-            classified = classify_nmap_host(record.to_dict())
+            classified = classify_host(record.to_dict())
             for key, value in classified.items():
                 if value:
                     setattr(record, key, value)

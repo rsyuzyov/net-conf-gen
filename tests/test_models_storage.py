@@ -98,6 +98,28 @@ class ModelsStorageTests(unittest.TestCase):
             self.assertEqual('Debian GNU/Linux 12 (bookworm)', host.distribution)
             self.assertTrue(host.success)
 
+    def test_storage_preserves_web_probes_with_numeric_ports(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.35', {
+                'ip': '192.168.1.35',
+                'web_probes': {
+                    443: {
+                        'scheme': 'https',
+                        'status_code': 200,
+                        'title': 'Proxmox Virtual Environment',
+                        'tls_subject': 'srv-hv1.ag.local',
+                    }
+                },
+            })
+            storage.flush()
+
+            host = storage.get_host_record('192.168.1.35')
+
+            self.assertEqual([443], list(host.web_probes.keys()))
+            self.assertEqual('https', host.web_probes[443]['scheme'])
+            self.assertEqual('Proxmox Virtual Environment', host.web_probes[443]['title'])
+
     def test_replace_discovery_snapshot_does_not_preserve_runtime_fields_for_non_completed_host(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = Storage(output_dir=tmpdir)

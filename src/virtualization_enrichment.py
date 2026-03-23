@@ -327,7 +327,7 @@ class PveGuestCollector:
             'kernel_version': kernel_version,
             'vendor': '',
             'service_details': {},
-            'scripts': {},
+            'web_probes': {},
         })
 
         return {
@@ -371,7 +371,7 @@ class PveGuestCollector:
             'kernel_version': kernel_version,
             'vendor': '',
             'service_details': {},
-            'scripts': {},
+            'web_probes': {},
         })
 
         return {

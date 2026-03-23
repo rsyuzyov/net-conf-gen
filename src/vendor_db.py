@@ -1,4 +1,4 @@
-"""Нормализация vendor/model для нового nmap-centered pipeline."""
+"""Нормализация vendor/model для current native discovery pipeline."""
 import re
 
 from src.os_detection import linux_distro_from_kernel, windows_name_from_kernel
@@ -121,8 +121,17 @@ def collect_host_text(host):
             details.get('version', ''),
             details.get('extrainfo', ''),
         ])
-        chunks.extend(details.get('scripts', {}).values())
-    chunks.extend(host.get('scripts', {}).values())
+    for probe in host.get('web_probes', {}).values():
+        chunks.extend([
+            probe.get('server', ''),
+            probe.get('title', ''),
+            probe.get('location', ''),
+            probe.get('content_type', ''),
+            probe.get('auth_scheme', ''),
+            probe.get('tls_subject', ''),
+            probe.get('tls_issuer', ''),
+        ])
+        chunks.extend(probe.get('tls_san', []))
     return ' '.join(str(chunk) for chunk in chunks if chunk).lower()
 
 
@@ -168,27 +177,33 @@ def detect_vendor_from_http_title(title):
     return None, None
 
 
-def _collect_nmap_script_text(host_info):
-    chunks = []
-    for service in host_info.get('service_details', {}).values():
-        for output in service.get('scripts', {}).values():
-            if output:
-                chunks.append(str(output))
-    for output in host_info.get('scripts', {}).values():
-        if output:
-            chunks.append(str(output))
-    return '\n'.join(chunks)
+def _collect_web_candidates(update_data, host_info):
+    probes = update_data.get('web_probes')
+    if probes is None:
+        probes = host_info.get('web_probes', {})
+    if not isinstance(probes, dict):
+        return []
+
+    ordered = []
+    for port, probe in probes.items():
+        if not isinstance(probe, dict):
+            continue
+        try:
+            numeric_port = int(port)
+        except (TypeError, ValueError):
+            numeric_port = 0
+        ordered.append((numeric_port, probe))
+    ordered.sort(key=lambda item: item[0])
+    return [probe for _, probe in ordered]
 
 
 def determine_vendor_model(update_data, host_info):
     """Определяет vendor и model по всем источникам.
 
     Приоритет:
-      1. SSL cert issuer
-      2. SNMP sysDescr
-      3. HTTP title
-      4. OS / hostname
-      5. MAC vendor (fallback)
+      1. Web/TLS fingerprints
+      2. OS / hostname
+      3. MAC vendor (fallback)
 
     Записывает 'vendor' и 'model' в update_data.
     """
@@ -196,83 +211,44 @@ def determine_vendor_model(update_data, host_info):
     model = ''
     mac_vendor = host_info.get('vendor', '')
     os_name = update_data.get('os', '')
-    http_title = update_data.get('http_title', '')
-    ssl_cert = update_data.get('ssl_cert', {})
-    snmp_info = update_data.get('snmp_info', {})
     host_type = update_data.get('type', '')
-    script_text = _collect_nmap_script_text(host_info)
-    script_lower = script_text.lower()
+    web_probes = _collect_web_candidates(update_data, host_info)
 
-    if not http_title:
-        title_match = re.search(r'http-title[:\s]+([^\n]+)', script_text, re.IGNORECASE)
-        if title_match:
-            http_title = title_match.group(1).strip()
-        else:
-            for service in host_info.get('service_details', {}).values():
-                script_title = service.get('scripts', {}).get('http-title')
-                if script_title:
-                    http_title = script_title.strip()
-                    break
+    # --- 1. Web/TLS fingerprints ---
+    for probe in web_probes:
+        http_title = str(probe.get('title', '')).strip()
+        auth_scheme = str(probe.get('auth_scheme', '')).lower()
+        tls_issuer = str(probe.get('tls_issuer', '')).lower()
+        web_text = ' '.join([
+            http_title,
+            str(probe.get('server', '')),
+            str(probe.get('location', '')),
+            str(probe.get('tls_subject', '')),
+            str(probe.get('tls_issuer', '')),
+            ' '.join(probe.get('tls_san', [])),
+        ]).lower()
 
-    # --- 1. SSL cert issuer ---
-    ssl_issuer = ''
-    if isinstance(ssl_cert, dict):
-        ssl_issuer = ssl_cert.get('issuer_cn', '').lower()
-    if not ssl_issuer and 'issuer:' in script_lower:
-        issuer_match = re.search(r'issuer[:=]\s*([^\n]+)', script_text, re.IGNORECASE)
-        if issuer_match:
-            ssl_issuer = issuer_match.group(1).strip().lower()
-    if 'kerio' in ssl_issuer:
-        vendor = vendor or 'Kerio'
-        model = model or 'Kerio Control'
-    elif 'proxmox' in ssl_issuer:
-        vendor = vendor or 'Proxmox'
-        model = model or 'Proxmox VE'
-
-    # --- 2. nmap scripts / SNMP-like data ---
-    sys_descr = ''
-    if isinstance(snmp_info, dict):
-        sys_descr = snmp_info.get('sysDescr', '')
-    if not sys_descr:
-        descr_match = re.search(r'sysdescr[:=]\s*([^\n]+)', script_text, re.IGNORECASE)
-        if descr_match:
-            sys_descr = descr_match.group(1).strip()
-    if sys_descr:
-        sd_lower = sys_descr.lower()
-        if 'routeros' in sd_lower or 'mikrotik' in sd_lower:
+        if 'kerio' in tls_issuer or 'kerio' in web_text:
+            vendor = vendor or 'Kerio'
+            model = model or 'Kerio Control'
+        elif 'proxmox' in tls_issuer or 'proxmox' in web_text:
+            vendor = vendor or 'Proxmox'
+            model = model or 'Proxmox VE'
+        elif 'routeros' in web_text or 'mikrotik' in web_text:
             vendor = vendor or 'MikroTik'
-            model = model or sys_descr.strip()[:80]
-        elif 'cisco' in sd_lower:
-            vendor = vendor or 'Cisco'
-            model = model or sys_descr.strip()[:80]
-        elif 'linux' in sd_lower:
-            model = model or sys_descr.strip()[:80]
-        elif 'windows' in sd_lower:
-            vendor = vendor or 'Microsoft'
-            model = model or sys_descr.strip()[:80]
-
-    # --- 3. HTTP title ---
-    if http_title:
-        title_v, title_m = detect_vendor_from_http_title(http_title)
-        if title_v:
-            vendor = vendor or title_v
-        if title_m:
-            model = model or title_m
-
-    if not vendor:
-        if 'routeros' in script_lower:
-            vendor = 'MikroTik'
             model = model or 'RouterOS'
-        elif 'hikvision' in script_lower:
-            vendor = 'Hikvision'
-        elif 'dahua' in script_lower:
-            vendor = 'Dahua'
-        elif 'kerio' in script_lower:
-            vendor = 'Kerio'
-        elif 'proxmox' in script_lower:
-            vendor = 'Proxmox'
 
-    # --- 4. OS / hostname ---
+        if http_title:
+            title_v, title_m = detect_vendor_from_http_title(http_title)
+            if title_v:
+                vendor = vendor or title_v
+            if title_m:
+                model = model or title_m
+
+        if auth_scheme == 'basic' and not model:
+            model = 'HTTP Basic Auth'
+
+    # --- 2. OS / hostname ---
     if os_name:
         os_lower = os_name.lower()
         if 'mikrotik' in os_lower:
@@ -306,13 +282,13 @@ def determine_vendor_model(update_data, host_info):
                     if kernel_ver:
                         model = linux_distro_from_kernel(kernel_ver)
 
-    # --- 5. Hostname-based ---
+    # --- 3. Hostname-based ---
     hostname = update_data.get('hostname', '') or host_info.get('hostname', '')
     if hostname and not vendor:
         if hostname.upper().startswith('NPI'):
             vendor = 'HP'
 
-    # --- 6. MAC vendor (fallback) ---
+    # --- 4. MAC vendor (fallback) ---
     if mac_vendor:
         normalized = normalize_mac_vendor(mac_vendor)
         # Если это ПК или сервер, то MAC-вендор (Realtek, Intel, Proxmox, VMware) обычно не является системным вендором
