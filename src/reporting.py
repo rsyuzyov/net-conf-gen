@@ -3,8 +3,14 @@ import json
 import os
 import logging
 import html
+from collections import Counter
+from pathlib import Path
 import yaml
-from src.constants import STATUS_COMPLETED, STATUS_UNKNOWN
+from src.constants import (
+    STATUS_COMPLETED,
+    STATUS_UNKNOWN,
+    STATUS_VIRTUALIZATION_COMPLETED,
+)
 from src.models import HostRecord
 from src.report_presenters import (
     CSV_KEYS,
@@ -46,9 +52,31 @@ class ReportGenerator:
         """Определяет, есть ли успешный результат подключения."""
         return host.get('scan_status') == STATUS_COMPLETED
 
+    def _has_ansible_access(self, host):
+        """Определяет, можно ли использовать хост в рабочем inventory."""
+        connection = self._determine_ansible_connection(host)
+        if not connection:
+            return False
+        return host.get('scan_status') in (STATUS_COMPLETED, STATUS_VIRTUALIZATION_COMPLETED)
+
     def _get_primary_auth_method(self, host):
         """Возвращает только успешный метод подключения."""
         return host.get('auth_method', '')
+
+    def _get_preferred_ansible_method(self, host):
+        methods = []
+        auth_methods = host.get('auth_methods', []) or []
+        if isinstance(auth_methods, list):
+            methods.extend(str(method).strip().lower() for method in auth_methods if method)
+
+        primary_method = str(host.get('auth_method', '') or '').strip().lower()
+        if primary_method:
+            methods.append(primary_method)
+
+        for candidate in ('ssh', 'winrm', 'psexec'):
+            if candidate in methods:
+                return candidate
+        return None
 
     def _get_scan_status(self, host):
         return host.get('scan_status', '') or STATUS_UNKNOWN
@@ -65,6 +93,341 @@ class ReportGenerator:
         if alias.lstrip('-').isdigit():
             return ''
         return alias[:63]
+
+    def _fallback_inventory_alias(self, host, base_group=''):
+        ip = str(host.get('ip', '')).strip()
+        ip_slug = ip.replace('.', '-') if ip else 'host'
+        host_type = str(host.get('type', '')).strip().lower()
+        os_type = str(host.get('os_type', '')).strip().lower()
+
+        prefix_map = {
+            'printers': 'printer',
+            'cameras': 'camera',
+            'mikrotik': 'mikrotik',
+            'network_devices': 'network',
+            'windows': 'windows',
+            'linux': 'linux',
+            STATUS_UNKNOWN: 'unknown',
+        }
+        prefix = (
+            prefix_map.get(base_group)
+            or (host_type if host_type and host_type != STATUS_UNKNOWN else '')
+            or (os_type if os_type and os_type != STATUS_UNKNOWN else '')
+            or 'host'
+        )
+        prefix = self._sanitize_host_alias(prefix) or 'host'
+        return f"{prefix}-{ip_slug}"
+
+    def _make_inventory_alias(self, host, used_aliases, base_group=''):
+        raw_hostname = str(host.get('hostname', '') or '').strip()
+        alias = self._sanitize_host_alias(raw_hostname)
+        generic_aliases = {'host', 'unknown', 'localhost'}
+
+        if not alias or alias.lower() in generic_aliases:
+            alias = self._fallback_inventory_alias(host, base_group=base_group)
+
+        base_alias = alias
+        counter = 2
+        while alias in used_aliases:
+            alias = f"{base_alias}-{counter}"
+            counter += 1
+        used_aliases.add(alias)
+        return alias
+
+    def _build_inventory_hostvars(self, host, include_metadata=False, metadata_fields=None, compact=False):
+        hostvars = {
+            'ansible_host': host['ip'],
+        }
+
+        if self._has_ansible_access(host):
+            user = host.get('user')
+            if user:
+                hostvars['ansible_user'] = user
+
+            key_path = host.get('key_path')
+            if key_path:
+                hostvars['ansible_ssh_private_key_file'] = key_path
+
+        if include_metadata:
+            os_value = host.get('os', '')
+            model_value = host.get('model', '')
+            os_type = str(host.get('os_type', '') or '').lower()
+            scan_status = self._get_scan_status(host)
+            if model_value and os_value and (model_value.lower() == os_value.lower() or model_value.lower() in os_value.lower()):
+                model_value = ''
+
+            available_metadata = {
+                'netconf_type': host.get('type', ''),
+                'netconf_os_type': host.get('os_type', ''),
+                'netconf_os': os_value,
+                'netconf_vendor': host.get('vendor', ''),
+                'netconf_model': model_value,
+                'netconf_scan_status': scan_status,
+                'netconf_auth_method': self._get_primary_auth_method(host),
+            }
+            if compact:
+                if os_type == 'windows':
+                    available_metadata['netconf_vendor'] = ''
+                    available_metadata['netconf_model'] = ''
+                if scan_status == STATUS_COMPLETED:
+                    available_metadata['netconf_scan_status'] = ''
+            selected_fields = metadata_fields or tuple(available_metadata.keys())
+            for key in selected_fields:
+                value = available_metadata.get(key, '')
+                if value:
+                    hostvars[key] = value
+
+        return hostvars
+
+    def _build_compact_inventory(self):
+        return {
+            'all': {
+                'children': {
+                    'managed': {
+                        'children': {
+                            'linux': {
+                                'children': {
+                                    'linux_servers_ssh': {'hosts': {}},
+                                    'linux_workstations_ssh': {'hosts': {}},
+                                },
+                            },
+                            'windows': {
+                                'children': {
+                                    'windows_ssh': {'hosts': {}},
+                                    'windows_winrm': {'hosts': {}},
+                                    'windows_psexec': {'hosts': {}},
+                                },
+                            },
+                            'devices_ssh': {
+                                'hosts': {},
+                            },
+                        },
+                    },
+                },
+            }
+        }
+
+    def _build_full_inventory(self):
+        return {
+            'all': {
+                'children': {
+                    'managed': {
+                        'children': {
+                            'linux': {
+                                'children': {
+                                    'linux_servers_ssh': {'hosts': {}},
+                                    'linux_workstations_ssh': {'hosts': {}},
+                                },
+                            },
+                            'windows': {
+                                'children': {
+                                    'windows_ssh': {'hosts': {}},
+                                    'windows_winrm': {'hosts': {}},
+                                    'windows_psexec': {'hosts': {}},
+                                },
+                            },
+                            'devices_ssh': {
+                                'hosts': {},
+                            },
+                        },
+                    },
+                    'discovered': {
+                        'children': {
+                            'linux_discovered': {'hosts': {}},
+                            'windows_discovered': {'hosts': {}},
+                            'mikrotik': {'hosts': {}},
+                            'network_devices': {'hosts': {}},
+                            'printers': {'hosts': {}},
+                            'cameras': {'hosts': {}},
+                            STATUS_UNKNOWN: {'hosts': {}},
+                        },
+                    },
+                },
+            }
+        }
+
+    def _compact_inventory_group_for_host(self, host):
+        connection = self._determine_ansible_connection(host)
+        os_type = str(host.get('os_type', '') or '').lower()
+        host_type = str(host.get('type', '') or '').lower()
+
+        if connection == 'ssh':
+            if os_type == 'linux' and host_type in ('server', 'workstation'):
+                return 'linux_servers_ssh' if host_type == 'server' else 'linux_workstations_ssh'
+            if os_type == 'windows':
+                return 'windows_ssh'
+            return 'devices_ssh'
+        if connection == 'winrm':
+            return 'windows_winrm'
+        if connection == 'psexec':
+            return 'windows_psexec'
+        return None
+
+    def _full_inventory_group_for_host(self, host):
+        if self._has_ansible_access(host):
+            return 'managed', self._compact_inventory_group_for_host(host)
+
+        group, _subgroup = self._classify_host_group(host)
+        discovered_map = {
+            'linux': 'linux_discovered',
+            'windows': 'windows_discovered',
+            'mikrotik': 'mikrotik',
+            'network_devices': 'network_devices',
+            'printers': 'printers',
+            'cameras': 'cameras',
+            STATUS_UNKNOWN: STATUS_UNKNOWN,
+        }
+        return 'discovered', discovered_map.get(group, STATUS_UNKNOWN)
+
+    def _inventory_group_node(self, inventory, group_path):
+        node = inventory['all']
+        for group_name in group_path:
+            node = node['children'][group_name]
+        return node
+
+    def _try_inventory_group_node(self, inventory, group_path):
+        try:
+            return self._inventory_group_node(inventory, group_path)
+        except KeyError:
+            return None
+
+    def _write_yaml_with_header(self, path, data, header_lines=None):
+        with open(path, 'w', encoding='utf-8') as f:
+            if header_lines:
+                for line in header_lines:
+                    f.write(f"# {line}\n")
+                f.write("\n")
+            yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+
+    def _collect_dominant_group_vars(self, inventory):
+        group_candidates = {
+            'linux_servers_ssh': {
+                'keys': ['ansible_user', 'ansible_ssh_private_key_file'],
+                'threshold': 0.7,
+                'key_thresholds': {
+                    'ansible_ssh_private_key_file': 0.6,
+                },
+            },
+            'linux_workstations_ssh': {
+                'keys': ['ansible_user', 'ansible_ssh_private_key_file'],
+                'threshold': 0.7,
+                'key_thresholds': {
+                    'ansible_ssh_private_key_file': 0.6,
+                },
+            },
+            'windows_winrm': {
+                'keys': ['ansible_user'],
+                'threshold': 0.7,
+            },
+            'windows_ssh': {
+                'keys': ['ansible_user', 'ansible_ssh_private_key_file'],
+                'threshold': 0.7,
+                'key_thresholds': {
+                    'ansible_ssh_private_key_file': 0.6,
+                },
+            },
+            'windows_psexec': {
+                'keys': ['ansible_user'],
+                'threshold': 0.7,
+            },
+            'devices_ssh': {
+                'keys': ['ansible_user', 'ansible_ssh_private_key_file'],
+                'threshold': 0.7,
+                'key_thresholds': {
+                    'ansible_ssh_private_key_file': 0.6,
+                },
+            },
+        }
+        dominant_vars = {
+            'all': {
+                'ansible_ssh_common_args': '-o StrictHostKeyChecking=no',
+            },
+            'linux': {
+                'ansible_connection': 'ssh',
+            },
+            'windows_winrm': {
+                'ansible_connection': 'winrm',
+                'ansible_winrm_server_cert_validation': 'ignore',
+            },
+            'windows_ssh': {
+                'ansible_connection': 'ssh',
+            },
+            'windows_psexec': {
+                'ansible_connection': 'psexec',
+            },
+            'devices_ssh': {
+                'ansible_connection': 'ssh',
+            },
+        }
+
+        for group_name, policy in group_candidates.items():
+            node = None
+            if group_name.startswith('linux_'):
+                node = self._try_inventory_group_node(inventory, ('managed', 'linux', group_name))
+            elif group_name.startswith('windows_'):
+                node = self._try_inventory_group_node(inventory, ('managed', 'windows', group_name))
+            elif group_name == 'devices_ssh':
+                node = self._try_inventory_group_node(inventory, ('managed', 'devices_ssh'))
+
+            if not node:
+                continue
+
+            hosts = node.get('hosts', {})
+            host_count = len(hosts)
+            if not host_count:
+                continue
+
+            eligible_hosts = [
+                hostvars for hostvars in hosts.values()
+                if hostvars.get('netconf_scan_status') == STATUS_COMPLETED
+            ] or list(hosts.values())
+
+            for key in policy.get('keys', []):
+                threshold = policy.get('key_thresholds', {}).get(key, policy.get('threshold', 0.8))
+                values = [hostvars.get(key) for hostvars in eligible_hosts if hostvars.get(key)]
+                if not values:
+                    continue
+                if key == 'ansible_user':
+                    eligible_count = len([hostvars for hostvars in eligible_hosts if hostvars.get(key)])
+                else:
+                    eligible_count = len(eligible_hosts)
+                value, count = Counter(values).most_common(1)[0]
+                if eligible_count and count / eligible_count >= threshold:
+                    dominant_vars.setdefault(group_name, {})[key] = value
+                    for hostvars in hosts.values():
+                        if hostvars.get(key) == value:
+                            del hostvars[key]
+                        elif key == 'ansible_ssh_private_key_file' and key not in hostvars:
+                            # Prevent inheriting the dominant SSH key on hosts where no key was discovered.
+                            hostvars[key] = None
+
+        return dominant_vars
+
+    def _write_group_vars(self, inventory):
+        group_vars_dir = Path(self.output_dir) / 'group_vars'
+        group_vars_dir.mkdir(parents=True, exist_ok=True)
+
+        group_vars = self._collect_dominant_group_vars(inventory)
+
+        for existing_file in group_vars_dir.glob('*.yml'):
+            if existing_file.stem not in group_vars:
+                existing_file.unlink()
+
+        for group_name, values in group_vars.items():
+            with open(group_vars_dir / f'{group_name}.yml', 'w', encoding='utf-8') as f:
+                yaml.dump(values, f, allow_unicode=True, sort_keys=False)
+
+    def _prune_empty_inventory_groups(self, node):
+        if not isinstance(node, dict):
+            return
+
+        children = node.get('children')
+        if isinstance(children, dict):
+            for name in list(children.keys()):
+                child = children[name]
+                self._prune_empty_inventory_groups(child)
+                if not child.get('hosts') and not child.get('children'):
+                    del children[name]
 
 
 
@@ -119,94 +482,88 @@ class ReportGenerator:
         return inventory_group_for_host(host)
 
     def _determine_ansible_connection(self, host):
-        return ansible_connection_for_host(host.get('auth_method', ''))
+        return ansible_connection_for_host(self._get_preferred_ansible_method(host) or '')
 
     def _generate_ansible_inventory(self, hosts):
-        # Все группы верхнего уровня
-        groups = [
-            'windows', 'linux', 'mikrotik',
-            'network_devices', 'printers', 'cameras', STATUS_UNKNOWN
-        ]
-        # Подгруппы
-        subgroups = {
-            'windows': ['windows_servers', 'windows_workstations'],
-            'linux': ['linux_servers'],
-        }
-
-        # Инициализация структуры inventory с общими vars
-        inventory = {'all': {
-            'vars': {
-                'ansible_ssh_common_args': '-o StrictHostKeyChecking=no',
-            },
-            'children': {}
-        }}
-        for g in groups:
-            if g in subgroups:
-                # Группа с подгруппами
-                inventory['all']['children'][g] = {
-                    'hosts': {},
-                    'children': {sg: {'hosts': {}} for sg in subgroups[g]}
-                }
-            else:
-                inventory['all']['children'][g] = {'hosts': {}}
-
+        inventory = self._build_compact_inventory()
+        full_inventory = self._build_full_inventory()
         secrets = {}
+        used_compact_aliases = set()
+        used_full_aliases = set()
 
         for h in hosts:
-            ip = h['ip']
-            name = self._sanitize_host_alias(h.get('hostname')) or ip
+            compact_group = self._compact_inventory_group_for_host(h) if self._has_ansible_access(h) else None
+            if compact_group:
+                compact_name = self._make_inventory_alias(h, used_compact_aliases, base_group=compact_group)
+                compact_group_path = ('managed', 'devices_ssh') if compact_group == 'devices_ssh' else (
+                    ('managed', 'linux', compact_group) if compact_group.startswith('linux_') else ('managed', 'windows', compact_group)
+                )
+                self._inventory_group_node(inventory, compact_group_path)['hosts'][compact_name] = self._build_inventory_hostvars(
+                    h,
+                    include_metadata=True,
+                    compact=True,
+                    metadata_fields=(
+                        'netconf_os',
+                        'netconf_vendor',
+                        'netconf_model',
+                        'netconf_scan_status',
+                    ),
+                )
 
-            group, subgroup = self._classify_host_group(h)
+                if h.get('user'):
+                    secrets[compact_name] = {
+                        'ansible_user': h['user']
+                    }
+                    if self._determine_ansible_connection(h) == 'winrm':
+                        secrets[compact_name]['ansible_connection'] = 'winrm'
+                        secrets[compact_name]['ansible_winrm_server_cert_validation'] = 'ignore'
 
-            # Формируем данные хоста
-            host_data = {'ansible_host': ip}
+            scope, full_group = self._full_inventory_group_for_host(h)
+            if full_group:
+                full_name = self._make_inventory_alias(h, used_full_aliases, base_group=full_group)
+                if scope == 'managed':
+                    full_group_path = ('managed', 'devices_ssh') if full_group == 'devices_ssh' else (
+                        ('managed', 'linux', full_group) if full_group.startswith('linux_') else ('managed', 'windows', full_group)
+                    )
+                else:
+                    full_group_path = ('discovered', full_group)
+                self._inventory_group_node(full_inventory, full_group_path)['hosts'][full_name] = self._build_inventory_hostvars(
+                    h,
+                    include_metadata=True,
+                )
 
-            # Добавляем connection-данные если authenticated enrichment завершён
-            if self._is_scan_completed(h):
-                connection = self._determine_ansible_connection(h)
-                if connection:
-                    host_data['ansible_connection'] = connection
-                    if connection == 'winrm':
-                        host_data['ansible_winrm_server_cert_validation'] = 'ignore'
+        # Убираем пустые группы для чистоты вывода
+        self._prune_empty_inventory_groups(inventory['all'])
+        self._prune_empty_inventory_groups(full_inventory['all'])
 
-                user = h.get('user')
-                if user:
-                    host_data['ansible_user'] = user
+        self._write_group_vars(inventory)
 
-            # Помещаем хост в подгруппу (если есть) или в основную группу
-            if subgroup and subgroup in inventory['all']['children'].get(group, {}).get('children', {}):
-                inventory['all']['children'][group]['children'][subgroup]['hosts'][name] = host_data
-            else:
-                inventory['all']['children'][group]['hosts'][name] = host_data
+        self._write_yaml_with_header(
+            os.path.join(self.output_dir, 'inventory.yaml'),
+            inventory,
+            header_lines=[
+                'Compact Ansible inventory with managed hosts only.',
+                'Shared connection settings are written to group_vars/*.yml.',
+            ],
+        )
 
-            # Secrets (для обратной совместимости)
-            if self._is_scan_completed(h) and h.get('user'):
-                secrets[name] = {
-                    'ansible_user': h['user']
-                }
-                if self._get_primary_auth_method(h) == 'winrm':
-                    secrets[name]['ansible_connection'] = 'winrm'
-                    secrets[name]['ansible_winrm_server_cert_validation'] = 'ignore'
-
-        # Убираем пустые группы/подгруппы для чистоты вывода
-        for g in list(inventory['all']['children'].keys()):
-            group_data = inventory['all']['children'][g]
-            # Убираем пустые подгруппы
-            if 'children' in group_data:
-                for sg in list(group_data['children'].keys()):
-                    if not group_data['children'][sg]['hosts']:
-                        del group_data['children'][sg]
-                if not group_data['children']:
-                    del group_data['children']
-            # Убираем полностью пустую группу
-            if not group_data.get('hosts') and not group_data.get('children'):
-                del inventory['all']['children'][g]
-
-        with open(os.path.join(self.output_dir, 'inventory.yaml'), 'w', encoding='utf-8') as f:
-            yaml.dump(inventory, f, allow_unicode=True)
+        self._write_yaml_with_header(
+            os.path.join(self.output_dir, 'inventory_full.yaml'),
+            full_inventory,
+            header_lines=[
+                'Full inventory with managed and discovered hosts.',
+                'managed/linux/linux_servers_ssh: Linux servers with SSH access.',
+                'managed/linux/linux_workstations_ssh: Linux workstations with SSH access.',
+                'managed/windows/windows_ssh: Windows hosts reachable through SSH.',
+                'managed/windows/windows_winrm: Windows hosts reachable through WinRM.',
+                'managed/windows/windows_psexec: Windows hosts reachable through PsExec.',
+                'managed/devices_ssh: Other SSH-manageable devices.',
+                'discovered/*: Found devices without usable Ansible access yet.',
+            ],
+        )
 
         with open(os.path.join(self.output_dir, 'secrets.yaml'), 'w', encoding='utf-8') as f:
-            yaml.dump(secrets, f, allow_unicode=True)
+            yaml.dump(secrets, f, allow_unicode=True, sort_keys=False)
 
     def _generate_ssh_config(self, hosts):
         config_lines = []
