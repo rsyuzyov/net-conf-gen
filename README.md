@@ -23,7 +23,7 @@
 
 ## Требования
 
-- Python 3.12+
+- Python 3.11+
 - сетевой доступ к целевым подсетям
 
 ## Установка
@@ -33,6 +33,15 @@ Linux:
 ```bash
 chmod +x ./install.sh && ./install.sh
 ```
+
+Что делает `install.sh` на Debian/Ubuntu:
+
+- ставит `python3`, `pip`, `venv` и базовые build-зависимости
+- создает `./.venv`
+- обновляет `pip`
+- устанавливает зависимости из `requirements.txt` и `pytest` для smoke-check
+
+Если нужен `WinRM` с Kerberos/SSO, могут понадобиться дополнительные настройки `krb5.conf` и доменной аутентификации на самой Linux-машине.
 
 Windows:
 
@@ -86,10 +95,19 @@ python main.py --host 10.0.0.1 --force --debug
 Быстрая проверка после установки:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest tests/test_models_storage.py tests/test_enrichment.py tests/test_reporting.py
 python main.py --config config.yaml --step discovery --host 10.0.0.1 --debug
 python main.py --config config.yaml --step report
 ```
+
+## Linux Notes
+
+- Проверено в `Debian` под WSL: ключевые модули импортируются, тесты проходят.
+- Для Debian/Ubuntu обязателен пакет `python3-venv`, иначе `.venv` не создастся.
+- Этапы `discovery`, `scan`, `report` и генерация артефактов работают на Linux.
+- `ssh`, `winrm` и `psexec` поддерживаются на Linux со стороны Python-зависимостей.
+- `WinRM` по `username/password` обычно работает сразу, а `Kerberos/SSO` зависит от системной настройки `krb5`/GSSAPI.
+- HTML-отчет генерируется нормально, но часть quick-action команд в UI ориентирована на Windows-клиент: `.rdp`, `Enter-PSSession`, `psexec`, SMB-пути `\\\\host\\share`.
 
 ## Выходные файлы
 
