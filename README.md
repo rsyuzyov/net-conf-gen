@@ -49,6 +49,8 @@ Windows:
 ./install.bat
 ```
 
+`install.bat` сначала пытается использовать `py -3`, а если Python Launcher не установлен, автоматически переключается на `python`.
+
 ## Конфиг
 
 Базовый шаблон: [config.example.yaml](./config.example.yaml)
