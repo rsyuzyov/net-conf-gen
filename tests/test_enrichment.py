@@ -6,10 +6,12 @@ from src.constants import (
     STATUS_AUTH_AVAILABLE_NO_ACCESS,
     STATUS_COMPLETED,
     STATUS_DISCOVERED,
+    STATUS_SCANNED,
     STATUS_WEB_COMPLETED,
 )
 from src.enrichment import AuthenticatedEnricher
 from src.storage import Storage
+from src.vendor_db import classify_windows_type
 
 
 class StubConnector:
@@ -71,6 +73,7 @@ class EnrichmentTests(unittest.TestCase):
 
             host = storage.get_host_record('192.168.1.10')
             self.assertEqual(STATUS_COMPLETED, host.scan_status)
+            self.assertTrue(host.success)
             self.assertEqual(['ssh'], host.auth_methods)
             self.assertEqual('root', host.user)
             self.assertEqual('Ubuntu 24.04', host.os)
@@ -103,7 +106,7 @@ class EnrichmentTests(unittest.TestCase):
             host = storage.get_host_record('192.168.1.20')
             self.assertEqual(STATUS_AUTH_AVAILABLE_NO_ACCESS, host.scan_status)
             self.assertEqual(['winrm'], host.auth_methods)
-            self.assertEqual('server', host.type)
+            self.assertEqual('workstation', host.type)
             self.assertEqual([5985], host.open_ports)
             self.assertEqual(['WinRM'], host.services)
 
@@ -332,6 +335,7 @@ class EnrichmentTests(unittest.TestCase):
 
             host = storage.get_host_record('192.168.1.80')
             self.assertEqual(STATUS_AUTH_AVAILABLE_NO_ACCESS, host.scan_status)
+            self.assertFalse(host.success)
             self.assertEqual('', host.auth_method)
             self.assertEqual('', host.user)
             self.assertEqual('', host.key_path)
@@ -339,6 +343,44 @@ class EnrichmentTests(unittest.TestCase):
             self.assertTrue(host.auth_attempts)
             self.assertNotIn('old-admin', [attempt['user'] for attempt in host.auth_attempts])
             self.assertTrue(all(attempt['user'] != 'old-admin' for attempt in host.auth_attempts))
+
+    def test_successful_psexec_sets_success_and_normalizes_mojibake_windows_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.81', {
+                'ip': '192.168.1.81',
+                'hostname': 'ws-81',
+                'category': 'windows',
+                'type': 'workstation',
+                'os_type': 'windows',
+                'open_ports': [445, 3389],
+                'services': ['SMB', 'RDP'],
+                'scan_status': STATUS_DISCOVERED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'winrm',
+                    'accounts': [{'user': 'domain\\user', 'password': 'secret'}],
+                }],
+                winrm_response={'auth_failed': True, 'error': 'Connection refused'},
+                psexec_response={
+                    'success': True,
+                    'hostname': 'ws-81',
+                    'os': 'М\xa0йкрософт Windows 10 Pro',
+                    'auth_method': 'psexec',
+                    'user': 'domain\\user',
+                },
+            )
+
+            enricher.enrich_host('192.168.1.81')
+
+            host = storage.get_host_record('192.168.1.81')
+            self.assertEqual(STATUS_COMPLETED, host.scan_status)
+            self.assertTrue(host.success)
+            self.assertEqual('Microsoft Windows 10 Pro', host.os)
 
     def test_failed_auth_does_not_downgrade_existing_web_completed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -373,6 +415,37 @@ class EnrichmentTests(unittest.TestCase):
             self.assertEqual('HP', host.vendor)
             self.assertEqual('LaserJet 400 M401dn', host.model)
 
+    def test_incomplete_connector_response_is_not_saved_to_auth_attempts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.91', {
+                'ip': '192.168.1.91',
+                'hostname': 'ws-91',
+                'category': 'windows',
+                'type': 'workstation',
+                'os_type': 'windows',
+                'open_ports': [445],
+                'services': ['SMB'],
+                'scan_status': STATUS_DISCOVERED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'winrm',
+                    'accounts': [{'user': 'domain\\user', 'password': 'secret'}],
+                }],
+                winrm_response={'error': 'Connection refused'},
+                psexec_response={'os': 'Windows'},
+            )
+
+            enricher.enrich_host('192.168.1.91')
+
+            host = storage.get_host_record('192.168.1.91')
+            self.assertEqual(STATUS_SCANNED, host.scan_status)
+            self.assertEqual([], host.auth_attempts)
+
 
 class ReverseDnsDiscoveryTests(unittest.TestCase):
     def test_reverse_dns_name_normalizes_primary_and_aliases(self):
@@ -382,6 +455,12 @@ class ReverseDnsDiscoveryTests(unittest.TestCase):
 
         self.assertEqual('srv-rds1', hostname)
         self.assertEqual(['srv-rds1.ag.local', 'srv-rds1'], hostnames)
+
+
+class WindowsTypeClassificationTests(unittest.TestCase):
+    def test_classify_windows_type_prefers_workstation_hostname_markers(self):
+        self.assertEqual('workstation', classify_windows_type('BO-WS-4140', [135, 445, 1560, 3389], 'Microsoft Windows 10 Pro'))
+        self.assertEqual('workstation', classify_windows_type('desktop-rbcq1j5', [135, 445, 3389, 5985], 'Microsoft Windows 10 Pro'))
 
 
 if __name__ == '__main__':

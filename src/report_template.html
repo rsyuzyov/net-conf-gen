@@ -20,6 +20,8 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 8px 14px;
             padding: 12px 0;
             margin-bottom: 10px;
             border-bottom: 2px solid #34495e;
@@ -131,6 +133,15 @@
             color: #555;
             font-size: 13px;
         }}
+        .report-alert {{
+            margin: 0 0 14px 0;
+            padding: 10px 12px;
+            border: 1px solid #f1c40f;
+            background: #fff8db;
+            color: #6b5800;
+            border-radius: 6px;
+            font-size: 13px;
+        }}
         @media (max-width: 768px) {{
             body {{
                 padding: 10px;
@@ -154,6 +165,7 @@
             <span>Generated: {timestamp} &nbsp;|&nbsp; Показано: <span id="visible-count">{total_hosts}</span> из {total_hosts}</span>
             <span>&nbsp;|&nbsp; Адресация: <select id="addr-mode" style="padding:2px 6px;border-radius:4px;border:1px solid #ccc;font-size:13px;"><option value="ip">IP</option><option value="name">Name</option><option value="fqdn">FQDN</option></select></span>
         </div>
+        {report_alert}
         <table id="scan-table">
             <thead>
                 <tr>
@@ -193,6 +205,20 @@
         </table>
     <div class="report-footer">Total hosts: {total_hosts} &nbsp;|&nbsp; {type_summary}</div>
     <script>
+    function showToast(message) {{
+        var n = document.createElement('div');
+        n.textContent = message;
+        n.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px 18px;border-radius:8px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3)';
+        document.body.appendChild(n);
+        setTimeout(function(){{ n.remove(); }}, 2500);
+    }}
+
+    function copyText(text, label) {{
+        navigator.clipboard.writeText(text).then(function() {{
+            showToast('\u2705 Скопировано: ' + label);
+        }});
+    }}
+
     function openRdp(host) {{
         var content = 'full address:s:' + host + '\r\nprompt for credentials:i:1\r\nscreen mode id:i:1\r\n';
         var blob = new Blob([content], {{type: 'application/x-rdp'}});
@@ -205,25 +231,25 @@
 
     function openSmb(host) {{
         var path = '\\\\' + host;
-        navigator.clipboard.writeText(path).then(function() {{
-            var n = document.createElement('div');
-            n.textContent = '\u2705 Скопировано: ' + path + ' — вставьте в проводник или Win+R';
-            n.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px 18px;border-radius:8px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3)';
-            document.body.appendChild(n);
-            setTimeout(function(){{ n.remove(); }}, 2500);
-        }});
+        copyText(path, path + ' — вставьте в проводник или Win+R');
+    }}
+
+    function copySsh(host, user) {{
+        var cmd = 'ssh ' + (user ? user + '@' : '') + host;
+        copyText(cmd, cmd);
     }}
 
     function copyWinRM(host, user) {{
         var cmd = 'Enter-PSSession -ComputerName ' + host;
         if (user) cmd += ' -Credential ' + user;
-        navigator.clipboard.writeText(cmd).then(function() {{
-            var n = document.createElement('div');
-            n.textContent = '\u2705 Скопировано: ' + cmd;
-            n.style.cssText = 'position:fixed;top:20px;right:20px;background:#333;color:#fff;padding:10px 18px;border-radius:8px;z-index:9999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3)';
-            document.body.appendChild(n);
-            setTimeout(function(){{ n.remove(); }}, 2500);
-        }});
+        copyText(cmd, cmd);
+    }}
+
+    function copyPsExec(host, user) {{
+        var cmd = 'psexec \\\\\\\\' + host;
+        if (user) cmd += ' -u ' + user;
+        cmd += ' cmd.exe';
+        copyText(cmd, cmd);
     }}
 
     function updateLinks() {{
@@ -233,17 +259,9 @@
             var host = el.getAttribute('data-' + mode);
             var type = el.getAttribute('data-type');
             var port = el.getAttribute('data-port');
-            var user = el.getAttribute('data-user');
+            if (!host) host = el.getAttribute('data-ip');
             var href = '#';
-            if (type === 'ssh') {{
-                href = 'ssh://' + (user ? user + '@' : '') + host;
-            }} else if (type === 'rdp') {{
-                href = "javascript:openRdp('" + host + "')";
-            }} else if (type === 'smb') {{
-                href = "javascript:openSmb('" + host + "')";
-            }} else if (type === 'winrm') {{
-                href = "javascript:copyWinRM('" + host + "','" + (user || '') + "')";
-            }} else if (type === 'http' || type === 'https') {{
+            if (type === 'http' || type === 'https') {{
                 var defaultPort = (type === 'http') ? '80' : '443';
                 if (port === defaultPort || port === '') {{
                     href = type + '://' + host;
@@ -251,9 +269,36 @@
                     href = type + '://' + host + ':' + port;
                 }}
             }}
+            el.setAttribute('data-resolved-host', host);
             el.setAttribute('href', href);
         }});
     }}
+
+    document.addEventListener('click', function(event) {{
+        var el = event.target.closest('.host-link');
+        if (!el) return;
+
+        var type = el.getAttribute('data-type');
+        var host = el.getAttribute('data-resolved-host') || el.getAttribute('data-ip');
+        var user = el.getAttribute('data-user') || '';
+
+        if (type === 'ssh') {{
+            event.preventDefault();
+            copySsh(host, user);
+        }} else if (type === 'winrm') {{
+            event.preventDefault();
+            copyWinRM(host, user);
+        }} else if (type === 'psexec') {{
+            event.preventDefault();
+            copyPsExec(host, user);
+        }} else if (type === 'rdp') {{
+            event.preventDefault();
+            openRdp(host);
+        }} else if (type === 'smb') {{
+            event.preventDefault();
+            openSmb(host);
+        }}
+    }});
 
     document.getElementById('addr-mode').addEventListener('change', updateLinks);
     document.addEventListener('DOMContentLoaded', updateLinks);

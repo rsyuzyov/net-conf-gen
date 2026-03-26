@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 from src.constants import STATUS_COMPLETED
 from src.models import HostRecord
-from src.utils import ip_to_int
+from src.utils import ip_to_int, normalize_os_name
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +52,16 @@ class Storage:
         with self._lock:
             if ip not in self.data:
                 self.data[ip] = {}
+            else:
+                existing_os = self.data[ip].get('os')
+                if isinstance(existing_os, str) and existing_os:
+                    self.data[ip]['os'] = normalize_os_name(existing_os)
 
             protected_fields = ['vendor', 'hostname', 'os', 'os_type', 'type', 'model']
 
             for key, value in info.items():
+                if key == 'os' and isinstance(value, str) and value:
+                    value = normalize_os_name(value)
                 if key in protected_fields and not overwrite_protected:
                     existing_value = self.data[ip].get(key)
                     new_is_empty = value is None or (isinstance(value, str) and not value.strip())
@@ -93,6 +99,8 @@ class Storage:
             new_data = {}
             for record in records:
                 base = record.to_dict()
+                if isinstance(base.get('os'), str) and base.get('os'):
+                    base['os'] = normalize_os_name(base['os'])
                 previous = existing.get(record.ip, {})
                 if previous.get('scan_status') == STATUS_COMPLETED:
                     for field in preserved_fields:

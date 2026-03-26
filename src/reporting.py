@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import logging
+import html
 import yaml
 from src.constants import STATUS_COMPLETED, STATUS_UNKNOWN
 from src.models import HostRecord
@@ -284,6 +285,7 @@ class ReportGenerator:
 
     def _generate_html(self, hosts):
         from datetime import datetime
+        from collections import Counter
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         table_rows = [
             html_row_for_host(
@@ -311,6 +313,26 @@ class ReportGenerator:
         type_summary_parts = [f'{t}: {c}' for t, c in sorted(type_counts.items())]
         type_summary_html = ' &nbsp;|&nbsp; '.join(type_summary_parts)
 
+        hostname_counts = Counter(
+            (h.get('hostname') or '').strip().lower()
+            for h in hosts
+            if (h.get('hostname') or '').strip()
+        )
+        duplicate_hostnames = sorted(name for name, count in hostname_counts.items() if count > 1)
+        if duplicate_hostnames:
+            duplicate_items = ', '.join(html.escape(name) for name in duplicate_hostnames[:10])
+            if len(duplicate_hostnames) > 10:
+                duplicate_items += f' и еще {len(duplicate_hostnames) - 10}'
+            report_alert = (
+                '<div class="report-alert">'
+                'Обнаружены дубликаты hostname/FQDN. '
+                'Режим адресации FQDN может быть неоднозначным: '
+                f'{duplicate_items}'
+                '</div>'
+            )
+        else:
+            report_alert = ''
+
         # Fill template
         targets_str = ', '.join(self.targets) if self.targets else ''
         html_content = template.format(
@@ -319,7 +341,8 @@ class ReportGenerator:
             total_hosts=len(hosts),
             type_summary=type_summary_html,
             domain=self.domain,
-            targets=targets_str
+            targets=targets_str,
+            report_alert=report_alert,
         )
         
         # Write to file

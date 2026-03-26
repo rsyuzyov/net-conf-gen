@@ -48,6 +48,19 @@ def normalize_os_name(os_str: str) -> str:
     if re.match(r'^\?{3,}\s+', os_str):
         os_str = re.sub(r'^\?+\s*', 'Microsoft ', os_str)
 
+    if 'Windows' in os_str:
+        windows_pos = os_str.find('Windows')
+        prefix = os_str[:windows_pos]
+        windows_part = os_str[windows_pos:]
+
+        suspicious_prefix = any(ord(ch) > 127 for ch in prefix)
+        suspicious_windows = any(ch in windows_part for ch in ('�', '\xa0'))
+        if suspicious_prefix or suspicious_windows:
+            ascii_windows = ''.join(ch for ch in windows_part if 32 <= ord(ch) <= 126).strip()
+            ascii_windows = re.sub(r'\s+', ' ', ascii_windows)
+            if ascii_windows.startswith('Windows'):
+                os_str = f'Microsoft {ascii_windows}'
+
     return os_str
 
 

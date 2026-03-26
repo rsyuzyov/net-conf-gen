@@ -1,5 +1,6 @@
 import html
 import re
+from collections import Counter
 from datetime import datetime
 
 from src.constants import STATUS_UNKNOWN
@@ -27,6 +28,16 @@ CSV_KEYS = [
     'ip', 'hostname', 'type', 'os_type', 'os', 'vendor', 'model', 'mac',
     'scan_status', 'auth_method', 'open_ports', 'services', 'last_updated'
 ]
+
+SCAN_STATUS_LABELS = {
+    'completed': 'Подключение выполнено',
+    'virtualization_completed': 'Подключение и виртуализация',
+    'web_completed': 'Только web-проверка',
+    'auth_available_no_access': 'Сервис доступа найден, вход не выполнен',
+    'scanned': 'Просканирован без подключения',
+    'discovered': 'Обнаружен',
+    'unknown': 'Неизвестно',
+}
 
 
 def field_value(host, name, default=''):
@@ -59,6 +70,12 @@ def format_datetime(dt_str, logger=None):
         if logger:
             logger.warning("Некорректный формат datetime: %s, %s", dt_str, e)
         return str(dt_str)
+
+
+def format_scan_status_label(status):
+    if not status:
+        return ''
+    return SCAN_STATUS_LABELS.get(status, status)
 
 
 def make_link(label, link_type, ip, hostname, domain, port='', user='', target=''):
@@ -103,23 +120,30 @@ def format_services_html(ip, hostname, services, open_ports, domain, ssh_user=No
     if not isinstance(services, list):
         return html.escape(str(services))
     open_ports_set = set(open_ports) if open_ports else set()
+    counts = Counter(str(svc) for svc in services)
+    seen = set()
     parts = []
     for svc in services:
+        svc = str(svc)
+        if svc in seen:
+            continue
+        seen.add(svc)
+        count_suffix = f' (x{counts[svc]})' if counts[svc] > 1 else ''
         if svc == 'SSH' and 22 in open_ports_set:
-            parts.append(make_link('SSH', 'ssh', ip, hostname, domain, user=ssh_user or ''))
+            parts.append(make_link(f'SSH{count_suffix}', 'ssh', ip, hostname, domain, user=ssh_user or ''))
         elif svc == 'RDP' and 3389 in open_ports_set:
-            parts.append(make_link('RDP', 'rdp', ip, hostname, domain))
+            parts.append(make_link(f'RDP{count_suffix}', 'rdp', ip, hostname, domain))
         elif svc == 'SMB' and 445 in open_ports_set:
-            parts.append(make_link('SMB', 'smb', ip, hostname, domain))
+            parts.append(make_link(f'SMB{count_suffix}', 'smb', ip, hostname, domain))
         elif svc == 'WinRM' and (5985 in open_ports_set or 5986 in open_ports_set):
-            parts.append(make_link('WinRM', 'winrm', ip, hostname, domain, user=ssh_user or ''))
+            parts.append(make_link(f'WinRM{count_suffix}', 'winrm', ip, hostname, domain, user=ssh_user or ''))
         else:
             port = SERVICE_TO_PORT.get(svc)
             if port and port in open_ports_set and port in WEB_PORTS:
                 proto = WEB_PORTS[port]
-                parts.append(make_link(html.escape(svc), proto, ip, hostname, domain, port=str(port), target='_blank'))
+                parts.append(make_link(html.escape(f'{svc}{count_suffix}'), proto, ip, hostname, domain, port=str(port), target='_blank'))
             else:
-                parts.append(html.escape(svc))
+                parts.append(html.escape(f'{svc}{count_suffix}'))
     return ', '.join(parts)
 
 
@@ -167,6 +191,7 @@ def html_row_for_host(host, domain, sanitize_host_alias, get_primary_auth_method
     user = field_value(host, 'user', '')
     auth_method = get_primary_auth_method(host)
     scan_status = get_scan_status(host)
+    scan_status_label = format_scan_status_label(scan_status)
     row_class = f"host-{os_type}"
     status_class = re.sub(r'[^a-z0-9]+', '-', scan_status.lower()).strip('-')
     if status_class:
@@ -179,8 +204,10 @@ def html_row_for_host(host, domain, sanitize_host_alias, get_primary_auth_method
 
     if auth_method == 'ssh' and user:
         auth_html = make_link(html.escape(auth_method), 'ssh', ip, hostname, domain, user=user)
-    elif auth_method in ('winrm', 'psexec') and 3389 in (open_ports or []):
-        auth_html = make_link(html.escape(auth_method), 'rdp', ip, hostname, domain)
+    elif auth_method == 'winrm':
+        auth_html = make_link(html.escape(auth_method), 'winrm', ip, hostname, domain, user=user)
+    elif auth_method == 'psexec':
+        auth_html = make_link(html.escape(auth_method), 'psexec', ip, hostname, domain, user=user)
     else:
         auth_html = escape_value(auth_method)
 
@@ -208,7 +235,7 @@ def html_row_for_host(host, domain, sanitize_host_alias, get_primary_auth_method
                     <td>{escape_value(vendor_val)}</td>
                     <td>{escape_value(model_val)}</td>
                     <td>{escape_value(field_value(host, 'mac'))}</td>
-                    <td>{escape_value(scan_status)}</td>
+                    <td data-status="{escape_value(scan_status)}">{escape_value(scan_status_label)}</td>
                     <td title="{escape_value(user)}">{auth_html}</td>
                     <td>{ports_html}</td>
                     <td>{services_html}</td>

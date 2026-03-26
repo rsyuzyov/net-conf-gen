@@ -154,6 +154,22 @@ class ModelsStorageTests(unittest.TestCase):
             self.assertEqual([], host.auth_methods)
             self.assertEqual([], host.auth_attempts)
 
+    def test_storage_normalizes_existing_and_incoming_os_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.50', {
+                'ip': '192.168.1.50',
+                'os': 'М\xa0йкрософт Windows 10 Pro',
+            })
+            storage.update_host('192.168.1.50', {
+                'ip': '192.168.1.50',
+                'vendor': 'Microsoft',
+            })
+            storage.flush()
+
+            host = storage.get_host_record('192.168.1.50')
+            self.assertEqual('Microsoft Windows 10 Pro', host.os)
+
 
 if __name__ == '__main__':
     unittest.main()

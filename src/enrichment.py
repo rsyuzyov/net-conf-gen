@@ -182,6 +182,7 @@ class AuthenticatedEnricher:
 
         result.update(info)
         result['key_path'] = key_path or ''
+        result['success'] = True
         result['scan_status'] = STATUS_COMPLETED
         self._append_auth_method(result, method)
         self._record_attempt(result, method, attempted_user or info.get('user', ''), 'success')
@@ -225,7 +226,6 @@ class AuthenticatedEnricher:
             update_data.update(final_data)
             return True
 
-        self._record_attempt(update_data, method, user, 'failed', 'Incomplete connector response')
         return False
 
     def _try_protocol(self, ip, host, protocol, update_data):
@@ -364,6 +364,7 @@ class AuthenticatedEnricher:
             'auth_method': '',
             'user': '',
             'key_path': '',
+            'success': False,
         }
 
         success = False

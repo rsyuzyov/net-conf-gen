@@ -230,8 +230,12 @@ def classify_windows_type(hostname, open_ports, os_name=''):
 
     Единственное место в коде для этой логики.
     """
+    hostname_lower = (hostname or '').lower()
     if os_name and 'server' in os_name.lower():
         return 'server'
+    workstation_markers = ('-ws-', 'ws-', 'desktop-', 'laptop-', 'nb-')
+    if any(marker in hostname_lower or hostname_lower.startswith(marker) for marker in workstation_markers):
+        return 'workstation'
     if hostname and hostname.lower().startswith('srv-'):
         return 'server'
     if SERVER_PORTS & set(open_ports or []):
