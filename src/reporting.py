@@ -503,7 +503,6 @@ class ReportGenerator:
                     include_metadata=True,
                     compact=True,
                     metadata_fields=(
-                        'netconf_os',
                         'netconf_vendor',
                         'netconf_model',
                         'netconf_scan_status',

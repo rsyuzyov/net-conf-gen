@@ -46,10 +46,11 @@ class ReportingTests(unittest.TestCase):
 
             self.assertIn('managed:', inventory)
             self.assertIn('linux_servers_ssh:', inventory)
-            self.assertIn('netconf_os: Ubuntu 24.04', inventory)
+            self.assertNotIn('netconf_os: Ubuntu 24.04', inventory)
             self.assertNotIn('netconf_scan_status: completed', inventory)
             self.assertIn('managed:', inventory_full)
             self.assertIn('linux_servers_ssh:', inventory_full)
+            self.assertIn('netconf_os: Ubuntu 24.04', inventory_full)
             self.assertIn('ansible_connection: ssh', linux_group_vars)
             self.assertIn('ansible_user: root', linux_servers_group_vars)
             self.assertIn('ansible_ssh_private_key_file:', linux_servers_group_vars)
