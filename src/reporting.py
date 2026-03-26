@@ -159,7 +159,6 @@ class ReportGenerator:
             available_metadata = {
                 'netconf_type': host.get('type', ''),
                 'netconf_os_type': host.get('os_type', ''),
-                'netconf_os': os_value,
                 'netconf_vendor': host.get('vendor', ''),
                 'netconf_model': model_value,
                 'netconf_scan_status': scan_status,

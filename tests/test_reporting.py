@@ -50,7 +50,7 @@ class ReportingTests(unittest.TestCase):
             self.assertNotIn('netconf_scan_status: completed', inventory)
             self.assertIn('managed:', inventory_full)
             self.assertIn('linux_servers_ssh:', inventory_full)
-            self.assertIn('netconf_os: Ubuntu 24.04', inventory_full)
+            self.assertNotIn('netconf_os: Ubuntu 24.04', inventory_full)
             self.assertIn('ansible_connection: ssh', linux_group_vars)
             self.assertIn('ansible_user: root', linux_servers_group_vars)
             self.assertIn('ansible_ssh_private_key_file:', linux_servers_group_vars)
@@ -183,6 +183,7 @@ class ReportingTests(unittest.TestCase):
             self.assertNotIn('docker1:', inventory)
             self.assertIn('docker1:', inventory_full)
             self.assertIn('netconf_scan_status: virtualization_completed', inventory_full)
+            self.assertNotIn('netconf_os: Debian GNU/Linux 12 (bookworm)', inventory_full)
 
     def test_reporting_highlights_web_completed_like_completed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
