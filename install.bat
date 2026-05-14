@@ -32,7 +32,32 @@ if errorlevel 1 (
 :activate
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
-pip install -r requirements.txt pytest
+if errorlevel 1 (
+    echo Failed to upgrade pip.
+    exit /b 1
+)
+
+python -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo Failed to install requirements.
+    exit /b 1
+)
+
+python -m pip install pytest
+if errorlevel 1 (
+    echo Failed to install pytest.
+    exit /b 1
+)
+
+python -c "import yaml" 2>nul
+if errorlevel 1 (
+    echo PyYAML missing after install, installing explicitly...
+    python -m pip install pyyaml
+    if errorlevel 1 (
+        echo Failed to install pyyaml.
+        exit /b 1
+    )
+)
 
 echo.
 echo Installation complete.

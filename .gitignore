@@ -20,7 +20,7 @@ venv/
 env/
 .env
 
-# IDEs
+# IDEs / Agents
 .vscode/
 .idea/
 .kiro/

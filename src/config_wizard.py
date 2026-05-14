@@ -16,7 +16,11 @@ def create_config():
 
     config = {}
 
-    # 1. Targets
+    # 1. Domain
+    print("\n--- Domain ---")
+    config['domain'] = get_input("Domain name (used for output/log subdirs, can be empty)", "")
+
+    # 2. Targets
     targets = []
     print("\n--- Targets ---")
     print("Enter subnets to scan (e.g., 192.168.0.0/24). Enter empty line to finish.")
@@ -30,7 +34,7 @@ def create_config():
         targets.append(target)
     config['targets'] = targets
 
-    # 2. Credentials
+    # 3. Credentials
     credentials = []
     print("\n--- Credentials ---")
     print("Add credentials for Deep Scan (SSH/WinRM). Enter empty user to finish.")
@@ -69,7 +73,7 @@ def create_config():
 
     config['credentials'] = credentials
 
-    # 3. Settings
+    # 4. Settings
     print("\n--- Settings ---")
     config['concurrency'] = int(get_input("Deep Scan Concurrency (threads)", "10"))
     config['ports_file'] = get_input("Ports file name", "ports.json")
