@@ -12,10 +12,11 @@ credentials:
         password: "your_password_here"
       - user: admin
         key_path: "/path/to/ssh/key"
-concurrency: 10
-ports_file: ports.json
+enrichment:
+  concurrency: 10       # одновременных SSH/WinRM/PsExec-сессий для web и scan
 discovery:
   concurrency: 64       # одновременных TCP-проверок (Windows TCP-стек захлёбывается на больших значениях)
   timeout: 1.5          # секунд на одну проверку порта
   retries: 0            # повторов при неудаче (0 = быстрый скан, 1-2 для нестабильной сети)
+ports_file: ports.json
 exclusions: []

@@ -115,7 +115,7 @@ def main():
             target_ips = [args.host] if args.host else None
             enricher = WebProbeEnricher(
                 storage=storage,
-                concurrency=config.get('concurrency', 10),
+                concurrency=(config.get('enrichment') or {}).get('concurrency', config.get('concurrency', 10)),
             )
             enricher.enrich_all(target_ips=target_ips)
             storage.flush()
@@ -131,7 +131,7 @@ def main():
             enricher = AuthenticatedEnricher(
                 storage=storage,
                 credentials=config.get('credentials', []),
-                concurrency=config.get('concurrency', 10),
+                concurrency=(config.get('enrichment') or {}).get('concurrency', config.get('concurrency', 10)),
             )
             enricher.enrich_all(scan_ips)
             storage.flush()

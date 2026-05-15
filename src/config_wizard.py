@@ -75,7 +75,13 @@ def create_config():
 
     # 4. Settings
     print("\n--- Settings ---")
-    config['concurrency'] = int(get_input("Deep Scan Concurrency (threads)", "10"))
+    enrichment_concurrency = int(get_input("Enrichment concurrency (web/scan threads)", "10"))
+    config['enrichment'] = {'concurrency': enrichment_concurrency}
+    config['discovery'] = {
+        'concurrency': int(get_input("Discovery concurrency (parallel TCP probes)", "64")),
+        'timeout': float(get_input("Discovery timeout (sec per port)", "1.5")),
+        'retries': int(get_input("Discovery retries (0 = no retry)", "0")),
+    }
     config['ports_file'] = get_input("Ports file name", "ports.json")
 
     exclusions_input = get_input("Exclusions (comma-separated IPs)", "")
