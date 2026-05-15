@@ -14,4 +14,8 @@ credentials:
         key_path: "/path/to/ssh/key"
 concurrency: 10
 ports_file: ports.json
+discovery:
+  concurrency: 64       # одновременных TCP-проверок (Windows TCP-стек захлёбывается на больших значениях)
+  timeout: 1.5          # секунд на одну проверку порта
+  retries: 0            # повторов при неудаче (0 = быстрый скан, 1-2 для нестабильной сети)
 exclusions: []

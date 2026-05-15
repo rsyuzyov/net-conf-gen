@@ -42,7 +42,13 @@ def load_config(config_path):
 
 
 def run_discovery(config, targets, exclusions):
-    scanner = NativeDiscovery(ports_file=config.get('ports_file', 'ports.json'))
+    discovery_cfg = config.get('discovery') or {}
+    scanner = NativeDiscovery(
+        ports_file=config.get('ports_file', 'ports.json'),
+        timeout=discovery_cfg.get('timeout', 1.5),
+        concurrency=discovery_cfg.get('concurrency', 64),
+        retries=discovery_cfg.get('retries', 0),
+    )
     return scanner.scan(targets, exclusions=exclusions)
 
 
@@ -50,7 +56,7 @@ def main():
     parser = argparse.ArgumentParser(description="net-conf-gen - network inventory")
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
     parser.add_argument('--step', choices=['discovery', 'web', 'scan', 'virt', 'report', 'all'], default='all', help='Step to run')
-    parser.add_argument('--force', action='store_true', help='Force enrichment of all hosts')
+    parser.add_argument('--force', action='store_true', help='Force discovery to replace nodes for all found hosts (not just incomplete ones)')
     parser.add_argument('--host', help='Scan specific host IP')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
@@ -97,7 +103,7 @@ def main():
         logger.info("=== Stage 1: Discovery ===")
         hosts = run_discovery(config, targets, exclusions)
         logger.info("Total active hosts found: %s", len(hosts))
-        storage.replace_discovery_snapshot(hosts)
+        storage.apply_discovery_snapshot(hosts, force=args.force)
         storage.flush()
 
     if args.step in ['web', 'all']:
@@ -127,7 +133,7 @@ def main():
                 credentials=config.get('credentials', []),
                 concurrency=config.get('concurrency', 10),
             )
-            enricher.enrich_all(scan_ips, force=args.force)
+            enricher.enrich_all(scan_ips)
             storage.flush()
             logger.info("Authenticated enrichment completed.")
 

@@ -14,8 +14,9 @@ from src.utils import reverse_dns_name
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = 0.5
-CONCURRENCY_LIMIT = 1000
+DEFAULT_TIMEOUT = 1.5
+DEFAULT_CONCURRENCY = 64
+DEFAULT_RETRIES = 0
 PTR_PORT_HINTS = {88, 135, 389, 445, 3389, 5985, 5986}
 PTR_SERVICE_HINTS = {'KERBEROS', 'RPC', 'LDAP', 'LDAPS', 'SMB', 'RDP', 'WINRM'}
 
@@ -66,24 +67,34 @@ def get_arp_table():
 
 
 class NativeDiscovery:
-    def __init__(self, ports_file='ports.json'):
+    def __init__(self, ports_file='ports.json', timeout=DEFAULT_TIMEOUT,
+                 concurrency=DEFAULT_CONCURRENCY, retries=DEFAULT_RETRIES):
         self.target_ports, self.port_to_service = load_port_config(ports_file)
+        self.timeout = float(timeout)
+        self.concurrency = int(concurrency)
+        self.retries = max(0, int(retries))
 
     async def _check_port(self, ip, port, sem):
+        attempts = self.retries + 1
         async with sem:
-            try:
-                conn = asyncio.open_connection(str(ip), port)
-                reader, writer = await asyncio.wait_for(conn, timeout=TIMEOUT)
-                writer.close()
+            for attempt in range(attempts):
                 try:
-                    await writer.wait_closed()
+                    conn = asyncio.open_connection(str(ip), port)
+                    reader, writer = await asyncio.wait_for(conn, timeout=self.timeout)
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+                    return True
+                except (asyncio.TimeoutError, OSError, ConnectionRefusedError):
+                    if attempt + 1 < attempts:
+                        await asyncio.sleep(0.1)
+                        continue
+                    return False
                 except Exception:
-                    pass
-                return True
-            except (asyncio.TimeoutError, OSError, ConnectionRefusedError):
-                return False
-            except Exception:
-                return False
+                    return False
+            return False
 
     async def _scan_host(self, ip, sem):
         open_ports = []
@@ -115,7 +126,7 @@ class NativeDiscovery:
         }
 
     async def _run_async_scan(self, hosts):
-        sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
+        sem = asyncio.Semaphore(self.concurrency)
         tasks = [self._scan_host(ip, sem) for ip in hosts]
         return await asyncio.gather(*tasks)
 

@@ -40,12 +40,12 @@ class ModelsStorageTests(unittest.TestCase):
 
             self.assertEqual(['192.168.1.3', '192.168.1.11', '192.168.1.20'], ips)
 
-    def test_replace_discovery_snapshot_removes_absent_hosts_and_preserves_auth(self):
+    def test_apply_discovery_keeps_completed_host_intact_without_force(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = Storage(output_dir=tmpdir)
             storage.update_host('192.168.1.10', {
                 'ip': '192.168.1.10',
-                'hostname': 'old-host',
+                'hostname': 'srv-app',
                 'open_ports': [22],
                 'services': ['SSH'],
                 'scan_status': 'completed',
@@ -53,14 +53,8 @@ class ModelsStorageTests(unittest.TestCase):
                 'auth_methods': ['ssh'],
                 'user': 'root',
             })
-            storage.update_host('192.168.1.99', {
-                'ip': '192.168.1.99',
-                'hostname': 'stale-host',
-                'open_ports': [80],
-                'services': ['HTTP'],
-            })
 
-            storage.replace_discovery_snapshot([
+            storage.apply_discovery_snapshot([
                 HostRecord(
                     ip='192.168.1.10',
                     open_ports=[22, 443],
@@ -73,13 +67,78 @@ class ModelsStorageTests(unittest.TestCase):
             ])
             storage.flush()
 
-            self.assertIsNone(storage.get_host_record('192.168.1.99'))
+            host = storage.get_host_record('192.168.1.10')
+            self.assertEqual([22], host.open_ports)
+            self.assertEqual(['SSH'], host.services)
+            self.assertEqual('ssh', host.auth_method)
+            self.assertEqual('completed', host.scan_status)
+
+    def test_apply_discovery_with_force_replaces_completed_host(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.10', {
+                'ip': '192.168.1.10',
+                'open_ports': [22],
+                'scan_status': 'completed',
+                'auth_method': 'ssh',
+            })
+
+            storage.apply_discovery_snapshot([
+                HostRecord(
+                    ip='192.168.1.10',
+                    open_ports=[22, 443],
+                    services=['SSH', 'HTTPS'],
+                    scan_status='discovered',
+                )
+            ], force=True)
+            storage.flush()
+
             host = storage.get_host_record('192.168.1.10')
             self.assertEqual([22, 443], host.open_ports)
-            self.assertEqual(['SSH', 'HTTPS'], host.services)
-            self.assertEqual('ssh', host.auth_method)
-            self.assertEqual(['ssh'], host.auth_methods)
-            self.assertEqual('root', host.user)
+            self.assertEqual('discovered', host.scan_status)
+            self.assertEqual('', host.auth_method)
+
+    def test_apply_discovery_keeps_absent_hosts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.99', {
+                'ip': '192.168.1.99',
+                'hostname': 'offline-host',
+                'open_ports': [80],
+                'scan_status': 'web_completed',
+            })
+
+            storage.apply_discovery_snapshot([
+                HostRecord(
+                    ip='192.168.1.10',
+                    open_ports=[22],
+                    services=['SSH'],
+                    scan_status='discovered',
+                )
+            ])
+            storage.flush()
+
+            self.assertIsNotNone(storage.get_host_record('192.168.1.99'))
+            self.assertEqual('offline-host', storage.get_host_record('192.168.1.99').hostname)
+            self.assertIsNotNone(storage.get_host_record('192.168.1.10'))
+
+    def test_apply_discovery_adds_brand_new_host(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+
+            storage.apply_discovery_snapshot([
+                HostRecord(
+                    ip='192.168.1.55',
+                    open_ports=[80],
+                    services=['HTTP'],
+                    scan_status='discovered',
+                )
+            ])
+            storage.flush()
+
+            host = storage.get_host_record('192.168.1.55')
+            self.assertIsNotNone(host)
+            self.assertEqual([80], host.open_ports)
 
     def test_storage_preserves_kernel_distribution_and_success_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -120,7 +179,7 @@ class ModelsStorageTests(unittest.TestCase):
             self.assertEqual('https', host.web_probes[443]['scheme'])
             self.assertEqual('Proxmox Virtual Environment', host.web_probes[443]['title'])
 
-    def test_replace_discovery_snapshot_does_not_preserve_runtime_fields_for_non_completed_host(self):
+    def test_apply_discovery_replaces_incomplete_host_without_force(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = Storage(output_dir=tmpdir)
             storage.update_host('192.168.1.40', {
@@ -134,7 +193,7 @@ class ModelsStorageTests(unittest.TestCase):
             })
             storage.flush()
 
-            storage.replace_discovery_snapshot([
+            storage.apply_discovery_snapshot([
                 HostRecord(
                     ip='192.168.1.40',
                     open_ports=[22],

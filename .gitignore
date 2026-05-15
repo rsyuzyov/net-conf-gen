@@ -30,3 +30,4 @@ env/
 # Project specific
 output/
 log/
+tmp/

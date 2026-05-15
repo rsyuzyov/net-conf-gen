@@ -7,9 +7,17 @@ from src.constants import (
     STATUS_AUTH_AVAILABLE_NO_ACCESS,
     STATUS_COMPLETED,
     STATUS_SCANNED,
+    STATUS_VIRTUALIZATION_COMPLETED,
     STATUS_WEB_COMPLETED,
     TYPE_UNKNOWN,
 )
+
+
+COMPLETED_SCAN_STATUSES = frozenset({
+    STATUS_COMPLETED,
+    STATUS_VIRTUALIZATION_COMPLETED,
+    STATUS_WEB_COMPLETED,
+})
 from src.credentials import CredentialManager
 from src.models import HostRecord
 from src.utils import normalize_os_name
@@ -98,11 +106,8 @@ class AuthenticatedEnricher:
         return ' '.join(str(part) for part in parts if part).lower()
 
     def _protocol_order(self, host):
-        category = self._field(host, 'category', CATEGORY_UNKNOWN)
-        if category == 'windows':
-            return ['winrm', 'psexec', 'ssh']
-        if category in ('linux', 'mikrotik', 'network', 'ipkvm'):
-            return ['ssh', 'winrm', 'psexec']
+        # SSH предпочтителен для всех категорий: единообразная транспортная схема и стабильнее
+        # для ansible-инвентаря, чем смесь winrm/psexec.
         return ['ssh', 'winrm', 'psexec']
 
     def _required_ports(self, protocol):
@@ -351,11 +356,23 @@ class AuthenticatedEnricher:
                 update_data[key] = value
         determine_vendor_model(update_data, merged | discovery_view)
 
-    def enrich_host(self, ip, force=False):
+    def enrich_host(self, ip):
         host = self.storage.get_host_record(ip)
         if not host:
             return
-        if not force and self._field(host, 'scan_status', '') == STATUS_COMPLETED:
+        current_status = self._field(host, 'scan_status', '')
+        if current_status in COMPLETED_SCAN_STATUSES:
+            # Soft-upgrade: хост уже опрошен, но не через SSH; если SSH-порт открыт —
+            # пробуем переключиться на SSH (предпочтительный протокол).
+            current_method = self._field(host, 'auth_method', '')
+            open_ports = set(self._field(host, 'open_ports', []))
+            if current_method != 'ssh' and 22 in open_ports:
+                upgrade_data = {
+                    'auth_methods': list(self._field(host, 'auth_methods', [])),
+                    'auth_attempts': list(self._field(host, 'auth_attempts', [])),
+                }
+                if self._try_protocol(ip, host, 'ssh', upgrade_data):
+                    self.storage.update_host(ip, upgrade_data)
             return
 
         update_data = {
@@ -386,12 +403,12 @@ class AuthenticatedEnricher:
         self._finalize_without_auth(host, update_data)
         self.storage.update_host(ip, update_data)
 
-    def enrich_all(self, ips, force=False):
+    def enrich_all(self, ips):
         if not ips:
             return
 
         with ThreadPoolExecutor(max_workers=min(self.concurrency, len(ips))) as executor:
-            futures = {executor.submit(self.enrich_host, ip, force): ip for ip in ips}
+            futures = {executor.submit(self.enrich_host, ip): ip for ip in ips}
             for future in as_completed(futures):
                 ip = futures[future]
                 try:

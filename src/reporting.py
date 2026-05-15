@@ -186,7 +186,7 @@ class ReportGenerator:
                         'children': {
                             'linux': {
                                 'children': {
-                                    'linux_servers_ssh': {'hosts': {}},
+                                    'linux_ssh': {'hosts': {}},
                                     'linux_workstations_ssh': {'hosts': {}},
                                 },
                             },
@@ -214,7 +214,7 @@ class ReportGenerator:
                         'children': {
                             'linux': {
                                 'children': {
-                                    'linux_servers_ssh': {'hosts': {}},
+                                    'linux_ssh': {'hosts': {}},
                                     'linux_workstations_ssh': {'hosts': {}},
                                 },
                             },
@@ -252,7 +252,7 @@ class ReportGenerator:
 
         if connection == 'ssh':
             if os_type == 'linux' and host_type in ('server', 'workstation'):
-                return 'linux_servers_ssh' if host_type == 'server' else 'linux_workstations_ssh'
+                return 'linux_ssh' if host_type == 'server' else 'linux_workstations_ssh'
             if os_type == 'windows':
                 return 'windows_ssh'
             return 'devices_ssh'
@@ -300,7 +300,7 @@ class ReportGenerator:
 
     def _collect_dominant_group_vars(self, inventory):
         group_candidates = {
-            'linux_servers_ssh': {
+            'linux_ssh': {
                 'keys': ['ansible_user', 'ansible_ssh_private_key_file'],
                 'threshold': 0.7,
                 'key_thresholds': {
@@ -550,7 +550,7 @@ class ReportGenerator:
             full_inventory,
             header_lines=[
                 'Full inventory with managed and discovered hosts.',
-                'managed/linux/linux_servers_ssh: Linux servers with SSH access.',
+                'managed/linux/linux_ssh: Linux servers with SSH access.',
                 'managed/linux/linux_workstations_ssh: Linux workstations with SSH access.',
                 'managed/windows/windows_ssh: Windows hosts reachable through SSH.',
                 'managed/windows/windows_winrm: Windows hosts reachable through WinRM.',

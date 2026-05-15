@@ -69,6 +69,14 @@ TEXT_VENDOR_PATTERNS = {
     'xiaomi': 'Xiaomi',
     'miwifi': 'Xiaomi',
     '小米路由器': 'Xiaomi',
+    'mobotix': 'Mobotix',
+    'zyxel': 'ZyXEL',
+    'apc ': 'APC',
+    'schneider': 'APC',
+    'webmin': 'Webmin',
+    'miniserv': 'Webmin',
+    'allegro-software-rompager-digi': 'Digi',
+    'rompager-digi': 'Digi',
 }
 
 # ===== IOT / Mobile Vendors that should not be classified as servers =====
@@ -104,8 +112,49 @@ HTTP_TITLE_VENDOR_MAP = {
     'unifi': ('Ubiquiti', None),
     'kerio': ('Kerio', None),
     'nanokvm': ('NanoKVM', 'NanoKVM'),
+    'login to webmin': ('Webmin', 'Webmin'),
+    'usermin': ('Webmin', 'Webmin'),
+    'webmin': ('Webmin', 'Webmin'),
+    'mobotix': ('Mobotix', None),
+    'zyxel': ('ZyXEL', None),
     '小米路由器': ('Xiaomi', 'Mi Router'),
+    'apc ': ('APC', None),
 }
+
+# ===== Server-header signatures → category/type/vendor hints =====
+# Каждый элемент: (substring lowercased, hints dict). Применяется при classify_host.
+SERVER_HEADER_SIGNATURES = (
+    ('virata-emweb', {'category': 'network', 'type': 'network', 'device_family': 'virata_emweb'}),
+    ('allegro-software-rompager', {'category': 'network', 'type': 'network', 'device_family': 'allegro_rompager'}),
+    ('raid httpserver', {'category': 'network', 'type': 'network', 'device_family': 'raid_controller'}),
+    ('wmi v', {'category': 'camera', 'type': 'camera', 'vendor': 'Mobotix', 'device_family': 'mobotix'}),
+    ('gsoap', {'category': 'camera', 'type': 'camera', 'device_family': 'onvif_gsoap'}),
+    ('mikrotik httpproxy', {'category': 'mikrotik', 'type': 'mikrotik', 'vendor': 'MikroTik'}),
+    ('miniserv', {'category': 'linux', 'type': 'server', 'vendor': 'Webmin', 'device_family': 'webmin'}),
+)
+
+REALM_MODEL_RE = re.compile(r'realm\s*=\s*"([A-Za-z][A-Za-z0-9-]{1,}\d[A-Za-z0-9-]*)"', re.IGNORECASE)
+
+# ===== Model prefix → vendor (надёжные префиксы серий managed switches и др.) =====
+MODEL_VENDOR_PREFIXES = (
+    (re.compile(r'^X?GS\d{3,4}', re.IGNORECASE), 'ZyXEL'),     # ZyXEL GS1910/GS1920/GS1900/XGS series
+    (re.compile(r'^DGS-\d', re.IGNORECASE), 'D-Link'),         # D-Link managed
+    (re.compile(r'^DES-\d', re.IGNORECASE), 'D-Link'),
+    (re.compile(r'^WS-C\d', re.IGNORECASE), 'Cisco'),          # Cisco Catalyst
+    (re.compile(r'^SG\d{3}', re.IGNORECASE), 'Cisco'),         # Cisco Small Business SG-series
+    (re.compile(r'^SRW\d', re.IGNORECASE), 'Cisco'),
+)
+
+
+def infer_vendor_from_model(model):
+    """Returns vendor name for known model prefixes, or empty string."""
+    if not model:
+        return ''
+    candidate = str(model).strip()
+    for pattern, vendor in MODEL_VENDOR_PREFIXES:
+        if pattern.match(candidate):
+            return vendor
+    return ''
 
 # ===== Server indicator ports =====
 SERVER_PORTS = {88, 389, 636, 1540, 1541, 1560, 1561, 2049, 5985}
@@ -162,6 +211,7 @@ def collect_host_text(host):
             probe.get('location', ''),
             probe.get('content_type', ''),
             probe.get('auth_scheme', ''),
+            probe.get('www_authenticate', ''),
             probe.get('tls_subject', ''),
             probe.get('tls_issuer', ''),
         ])
@@ -241,6 +291,30 @@ def classify_windows_type(hostname, open_ports, os_name=''):
     if SERVER_PORTS & set(open_ports or []):
         return 'server'
     return 'workstation'
+
+
+def detect_from_server_header(server):
+    """Returns hints dict (category/type/vendor/device_family) by HTTP Server header."""
+    if not server:
+        return {}
+    server_lower = str(server).lower()
+    for needle, hints in SERVER_HEADER_SIGNATURES:
+        if needle in server_lower:
+            return dict(hints)
+    return {}
+
+
+def extract_model_from_realm(www_authenticate):
+    """Returns a model-like string parsed from a Basic-auth realm, if any."""
+    if not www_authenticate:
+        return ''
+    match = REALM_MODEL_RE.search(str(www_authenticate))
+    if not match:
+        return ''
+    candidate = match.group(1).strip()
+    if candidate.lower() in {'login', 'admin', 'password', 'user', 'router', 'switch'}:
+        return ''
+    return candidate
 
 
 def detect_vendor_from_http_title(title):
@@ -384,6 +458,16 @@ def determine_vendor_model(update_data, host_info):
             if extracted_model:
                 model = extracted_model
 
+        if not vendor:
+            server_hints = detect_from_server_header(probe.get('server', ''))
+            if server_hints.get('vendor'):
+                vendor = server_hints['vendor']
+
+        if not model:
+            realm_model = extract_model_from_realm(probe.get('www_authenticate', ''))
+            if realm_model:
+                model = realm_model
+
         if auth_scheme == 'basic' and probe.get('scheme') in ('http', 'https') and not model:
             model = 'HTTP Basic Auth'
 
@@ -426,6 +510,10 @@ def determine_vendor_model(update_data, host_info):
     if hostname and not vendor:
         if hostname.upper().startswith('NPI'):
             vendor = 'HP'
+
+    # --- 3.5. Vendor by model prefix ---
+    if not vendor and model:
+        vendor = infer_vendor_from_model(model) or vendor
 
     # --- 4. MAC vendor (fallback) ---
     if mac_vendor:

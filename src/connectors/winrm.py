@@ -1,3 +1,4 @@
+import json
 import winrm
 import warnings
 import logging
@@ -201,39 +202,79 @@ class WinRMConnector(BaseConnector):
         
         return {'error': 'All transports failed'}
     
+    # PowerShell-скрипт собирает всё разом и возвращает JSON, где не-ASCII
+    # эскейпится как \uXXXX. Это переживает любые проблемы кодировки stdout/SOAP
+    # транспорта.
+    #
+    # Имя ОС читаем из реестра (ProductName в CurrentVersion), а не из
+    # Win32_OperatingSystem.Caption: на локализованной Windows 11 Caption
+    # приходит с символами '?' вместо национальных букв (известная проблема
+    # CIM/WMI с длинными локализованными строками), а ProductName хранится в
+    # реестре корректно.
+    _HOST_INFO_PS = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$reg=Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion';"
+        "$os=Get-CimInstance Win32_OperatingSystem;"
+        "$mac=(Get-NetAdapter|Where-Object Status -eq 'Up'|Select-Object -First 1).MacAddress;"
+        "$result=@{"
+        "hostname=$env:COMPUTERNAME;"
+        "caption=$(if ($reg.ProductName) {$reg.ProductName} else {$os.Caption});"
+        "version=$os.Version;"
+        "mac=$mac"
+        "};"
+        "ConvertTo-Json -Compress -InputObject $result"
+    )
+
+    def _parse_host_info_json(self, raw):
+        text = _decode_output(raw).strip()
+        if not text:
+            return {}
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            logger.debug("WinRM JSON parse failed: %r", text[:200])
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return data
+
     def _get_host_info(self, ip, session):
         """Получает информацию о хосте. Подключение уже проверено."""
         os_info = {}
-        
-        # hostname
-        result = session.run_cmd('hostname')
+
+        result = session.run_ps(self._HOST_INFO_PS)
         if result.status_code == 0:
-            os_info['hostname'] = _decode_output(result.std_out).strip()
-        
-        # OS
-        result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Caption')
-        if result.status_code == 0:
-            os_info['os'] = _decode_output(result.std_out).strip()
-        
-        # Версия
-        result = session.run_ps('(Get-WmiObject Win32_OperatingSystem).Version')
-        if result.status_code == 0:
-            os_info['kernel_version'] = _decode_output(result.std_out).strip()
-        
-        # MAC
-        result = session.run_ps('(Get-NetAdapter | Where-Object Status -eq "Up" | Select-Object -First 1).MacAddress')
-        if result.status_code == 0:
-            mac = _decode_output(result.std_out).strip()
+            data = self._parse_host_info_json(result.std_out)
+            hostname = str(data.get('hostname', '') or '').strip()
+            caption = str(data.get('caption', '') or '').strip()
+            version = str(data.get('version', '') or '').strip()
+            mac = str(data.get('mac', '') or '').strip()
+            if hostname:
+                os_info['hostname'] = hostname
+            if caption:
+                os_info['os'] = caption
+            if version:
+                os_info['kernel_version'] = version
             if mac:
                 os_info['mac'] = mac.replace('-', ':')
-        
-        # Альтернативный MAC для старых систем
+
+        # Fallback на старые системы без CIM / без Get-NetAdapter — тоже через JSON.
+        if 'hostname' not in os_info:
+            result = session.run_cmd('hostname')
+            if result.status_code == 0:
+                hostname = _decode_output(result.std_out).strip()
+                if hostname:
+                    os_info['hostname'] = hostname
+
         if 'mac' not in os_info:
             result = session.run_cmd('getmac /v /fo csv | findstr /V "disabled"')
             if result.status_code == 0:
                 import re
-                mac_match = re.search(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', _decode_output(result.std_out))
+                mac_match = re.search(
+                    r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})',
+                    _decode_output(result.std_out),
+                )
                 if mac_match:
                     os_info['mac'] = mac_match.group(0).replace('-', ':')
-        
+
         return os_info

@@ -72,6 +72,20 @@ def _https_context():
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+    # Embedded-устройства (UPS, switches, IP-камеры) часто говорят на TLSv1/SSLv3
+    # с устаревшими cipher suites. Снижаем SECLEVEL и допускаем legacy TLS,
+    # иначе на 443/8443 получаем сплошные SSLV3_ALERT_HANDSHAKE_FAILURE.
+    try:
+        ctx.set_ciphers('ALL:@SECLEVEL=0')
+    except ssl.SSLError:
+        pass
+    try:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1
+    except (AttributeError, ValueError):
+        pass
+    legacy_renegotiation = getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0)
+    if legacy_renegotiation:
+        ctx.options |= legacy_renegotiation
     return ctx
 
 
@@ -397,8 +411,8 @@ class WebProbeEnricher:
             metadata['device_vendor'] = vendor
         return metadata
 
-    def _probe_port(self, ip, port):
-        url = self._build_url(ip, port)
+    def _probe_port_with_scheme(self, ip, port, scheme):
+        url = f"{scheme}://{ip}:{port}/"
         request = urllib.request.Request(url, headers={'User-Agent': 'net-conf-gen/1.0'})
         response = None
         body = ''
@@ -407,7 +421,7 @@ class WebProbeEnricher:
         final_url = url
 
         try:
-            opener = self._https_opener if WEB_PORT_SCHEMES[port] == 'https' else self._http_opener
+            opener = self._https_opener if scheme == 'https' else self._http_opener
             response = opener.open(request, timeout=self.timeout)
             status_code = getattr(response, 'status', 200)
             headers = response.headers
@@ -419,10 +433,10 @@ class WebProbeEnricher:
             final_url = exc.geturl() or url
             body = _read_error_body(exc, 16384)
         except Exception as exc:
-            logger.debug("HTTP probe failed for %s:%s: %s", ip, port, exc)
+            logger.debug("HTTP probe failed for %s://%s:%s: %s", scheme, ip, port, exc)
             return {
                 'port': port,
-                'scheme': WEB_PORT_SCHEMES[port],
+                'scheme': scheme,
                 'reachable': False,
                 'error': str(exc),
             }
@@ -441,7 +455,7 @@ class WebProbeEnricher:
         content_type = _normalize_header(headers.get('Content-Type') if headers else '')
         probe = {
             'port': port,
-            'scheme': WEB_PORT_SCHEMES[port],
+            'scheme': scheme,
             'reachable': True,
             'status_code': status_code,
             'server': server,
@@ -454,8 +468,36 @@ class WebProbeEnricher:
             'redirect_to_login': 'login' in location.lower() or 'signin' in location.lower(),
             'is_login_page': _is_login_page(title, body, location, auth_scheme),
         }
-        if WEB_PORT_SCHEMES[port] == 'https':
+        if scheme == 'https':
             probe.update(_fetch_tls_info(ip, port, self.timeout))
+        return probe
+
+    @staticmethod
+    def _looks_like_ssl_error(error):
+        if not error:
+            return False
+        text = str(error).lower()
+        return any(marker in text for marker in (
+            'ssl',
+            'tls',
+            'handshake',
+            'wrong_version_number',
+            'unsafe_legacy_renegotiation',
+            'eof occurred in violation of protocol',
+        ))
+
+    def _probe_port(self, ip, port):
+        native_scheme = WEB_PORT_SCHEMES[port]
+        probe = self._probe_port_with_scheme(ip, port, native_scheme)
+        if probe.get('reachable') or native_scheme != 'https':
+            return probe
+        if not self._looks_like_ssl_error(probe.get('error')):
+            return probe
+        # Embedded-устройство на этом порту не говорит по TLS — пробуем plain HTTP.
+        fallback = self._probe_port_with_scheme(ip, port, 'http')
+        if fallback.get('reachable'):
+            fallback['scheme_fallback_from'] = native_scheme
+            return fallback
         return probe
 
     def _open_url(self, url):
@@ -983,12 +1025,15 @@ class WebProbeEnricher:
 
         if 'kyocera' not in root_text and 'command center rx' not in root_text and 'km-mfp-http' not in root_text:
             onvif_metadata = {}
+            server_lower = str(probe.get('server', '')).lower()
+            gsoap_signal = 'gsoap' in server_lower
             camera_like = (
                 554 in ports
                 or 34567 in ports
                 or any(service in ('onvif', 'xmeye', 'rtsp') for service in services)
+                or gsoap_signal
             )
-            if probe.get('port') in (80, 8899, 5000) and camera_like:
+            if (probe.get('port') in (80, 8899, 5000, 9090) and camera_like) or gsoap_signal:
                 onvif_metadata = self._fetch_onvif_device_info(base_url)
 
             plugin_response = None

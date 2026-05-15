@@ -182,6 +182,98 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual('Netgear', result['vendor'])
         self.assertEqual('dgn2200v3', result['model'])
 
+    def test_virata_emweb_server_classifies_as_network(self):
+        result = classify_host({
+            'ip': '192.168.1.20',
+            'open_ports': [80, 443],
+            'services': ['HTTP', 'HTTPS'],
+            'web_probes': {
+                80: {
+                    'title': 'Moved',
+                    'server': 'Virata-EmWeb/R6_2_1',
+                    'location': 'https://192.168.1.20/',
+                },
+            },
+        })
+        self.assertEqual('network', result['category'])
+        self.assertEqual('network', result['type'])
+
+    def test_allegro_rompager_digi_classifies_as_network_with_vendor(self):
+        result = classify_host({
+            'ip': '192.168.1.21',
+            'open_ports': [80, 443],
+            'services': ['HTTP', 'HTTPS'],
+            'web_probes': {
+                80: {
+                    'server': 'Allegro-Software-RomPager-Digi/4.01.1',
+                    'location': 'http://192.168.1.21/home.htm',
+                },
+            },
+        })
+        self.assertEqual('network', result['category'])
+        self.assertEqual('Digi', result['vendor'])
+
+    def test_gsoap_server_classifies_as_camera(self):
+        result = classify_host({
+            'ip': '192.168.1.22',
+            'open_ports': [9090],
+            'services': ['HTTP'],
+            'web_probes': {
+                9090: {
+                    'server': 'gSOAP/2.8',
+                },
+            },
+        })
+        self.assertEqual('camera', result['category'])
+        self.assertEqual('camera', result['type'])
+
+    def test_realm_supplies_switch_model(self):
+        result = classify_host({
+            'ip': '192.168.1.23',
+            'open_ports': [80],
+            'services': ['HTTP'],
+            'web_probes': {
+                80: {
+                    'server': 'Web Server',
+                    'title': '401 Not Authorized',
+                    'www_authenticate': 'Basic realm="GS1910-48"',
+                },
+            },
+        })
+        self.assertEqual('network', result['category'])
+        self.assertEqual('GS1910-48', result['model'])
+
+    def test_webmin_marker_classifies_as_linux_server(self):
+        result = classify_host({
+            'ip': '192.168.1.24',
+            'open_ports': [22, 10000],
+            'services': ['SSH', 'HTTPS'],
+            'web_probes': {
+                10000: {
+                    'server': 'MiniServ/2.111',
+                    'title': 'Login to Webmin',
+                },
+            },
+        })
+        self.assertEqual('linux', result['category'])
+        self.assertEqual('server', result['type'])
+        self.assertEqual('Webmin', result['vendor'])
+
+    def test_mobotix_wmi_server_classifies_as_camera(self):
+        result = classify_host({
+            'ip': '192.168.1.25',
+            'open_ports': [80],
+            'services': ['HTTP'],
+            'web_probes': {
+                80: {
+                    'server': 'WMI V5',
+                    'location': 'index.htm',
+                },
+            },
+        })
+        self.assertEqual('camera', result['category'])
+        self.assertEqual('Mobotix', result['vendor'])
+
     def test_nag_vendor_with_switch_login_page_classifies_as_network(self):
         result = classify_host({
             'ip': '192.168.1.18',

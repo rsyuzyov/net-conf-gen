@@ -1,14 +1,28 @@
 """Хранилище данных сканирования — JSON-файл."""
+import glob
 import json
 import os
 import logging
+import shutil
 import threading
 from datetime import datetime
-from src.constants import STATUS_COMPLETED
+from src.constants import (
+    STATUS_COMPLETED,
+    STATUS_VIRTUALIZATION_COMPLETED,
+    STATUS_WEB_COMPLETED,
+)
 from src.models import HostRecord
 from src.utils import ip_to_int, normalize_os_name
 
 logger = logging.getLogger(__name__)
+
+STATE_VERSION = 1
+BACKUP_KEEP = 30
+COMPLETED_STATUSES = frozenset({
+    STATUS_COMPLETED,
+    STATUS_VIRTUALIZATION_COMPLETED,
+    STATUS_WEB_COMPLETED,
+})
 
 
 class Storage:
@@ -17,26 +31,65 @@ class Storage:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         self.state_file = os.path.join(output_dir, 'scan_state.json')
+        self.backup_dir = os.path.join(output_dir, 'backups')
+        self.meta = {'version': STATE_VERSION, 'last_scan': ''}
         self.data = self._load()
         self._lock = threading.Lock()
         self._dirty = False
+        self._make_backup()
 
     def _load(self):
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load state: {e}")
-                return {}
+        if not os.path.exists(self.state_file):
+            return {}
+        try:
+            with open(self.state_file, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
+            return {}
+
+        if isinstance(raw, dict) and 'hosts' in raw and 'meta' in raw:
+            self.meta = {**self.meta, **(raw.get('meta') or {})}
+            hosts = raw.get('hosts') or {}
+            return hosts if isinstance(hosts, dict) else {}
+
+        # Legacy flat format: {<ip>: {...}} — wrap into hosts dict
+        if isinstance(raw, dict):
+            return raw
+
         return {}
+
+    def _make_backup(self):
+        if not os.path.exists(self.state_file):
+            return
+        try:
+            os.makedirs(self.backup_dir, exist_ok=True)
+            stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            dest = os.path.join(self.backup_dir, f'scan_state_{stamp}.json')
+            shutil.copy2(self.state_file, dest)
+            self._rotate_backups()
+        except Exception as e:
+            logger.warning(f"Failed to backup state: {e}")
+
+    def _rotate_backups(self):
+        pattern = os.path.join(self.backup_dir, 'scan_state_*.json')
+        files = sorted(glob.glob(pattern))
+        excess = len(files) - BACKUP_KEEP
+        for path in files[:excess] if excess > 0 else ():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def _save(self):
         """Внутренний метод сохранения. Должен вызываться под _lock."""
         try:
-            sorted_data = dict(sorted(self.data.items(), key=lambda x: ip_to_int(x[0])))
+            sorted_hosts = dict(sorted(self.data.items(), key=lambda x: ip_to_int(x[0])))
+            self.meta['last_scan'] = datetime.now().isoformat()
+            self.meta['version'] = STATE_VERSION
+            payload = {'meta': dict(self.meta), 'hosts': sorted_hosts}
             with open(self.state_file, 'w', encoding='utf-8') as f:
-                json.dump(sorted_data, f, indent=2, ensure_ascii=False)
+                json.dump(payload, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
@@ -76,40 +129,35 @@ class Storage:
     def update_host_record(self, record):
         self.update_host(record.ip, record.to_dict())
 
-    def replace_discovery_snapshot(self, records):
-        """Заменяет текущий state свежим discovery snapshot.
+    def apply_discovery_snapshot(self, records, force=False):
+        """Применяет результаты discovery к state.
 
-        Сетевые факты берутся только из последнего discovery. Из старого state
-        сохраняются только результаты authenticated enrichment, чтобы этап scan
-        мог работать инкрементально без смешивания устаревших discovery-данных.
+        Семантика:
+          - Хост отсутствует в state → добавляется целиком.
+          - Хост есть и `force=True` → узел полностью заменяется свежим discovery snapshot.
+          - Хост есть, состояние «незавершённое» (scan_status не в COMPLETED_STATUSES)
+            → узел полностью заменяется.
+          - Хост есть и завершён → не трогаем.
+          - Хосты, отсутствующие в новом discovery, остаются в state без изменений.
         """
-        preserved_fields = {
-            'auth_methods',
-            'auth_attempts',
-            'auth_method',
-            'user',
-            'key_path',
-            'kernel_version',
-            'distribution',
-            'success',
-        }
-
+        now = datetime.now().isoformat()
         with self._lock:
-            existing = self.data
-            new_data = {}
             for record in records:
                 base = record.to_dict()
                 if isinstance(base.get('os'), str) and base.get('os'):
                     base['os'] = normalize_os_name(base['os'])
-                previous = existing.get(record.ip, {})
-                if previous.get('scan_status') == STATUS_COMPLETED:
-                    for field in preserved_fields:
-                        if field in previous and previous[field] not in (None, '', [], {}):
-                            base[field] = previous[field]
-                new_data[record.ip] = base
-                new_data[record.ip]['last_updated'] = datetime.now().isoformat()
+                base['last_updated'] = now
 
-            self.data = new_data
+                existing = self.data.get(record.ip)
+                if existing is None:
+                    self.data[record.ip] = base
+                    continue
+
+                if force or existing.get('scan_status') not in COMPLETED_STATUSES:
+                    self.data[record.ip] = base
+                    continue
+
+                # завершён, force=False → не трогаем
             self._dirty = True
 
     def get_host(self, ip):

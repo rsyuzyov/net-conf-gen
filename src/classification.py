@@ -1,7 +1,25 @@
 import re
 
 from src.constants import CATEGORY_UNKNOWN, TYPE_UNKNOWN
-from src.vendor_db import classify_windows_type, collect_host_text, infer_vendor_from_host
+from src.vendor_db import (
+    classify_windows_type,
+    collect_host_text,
+    detect_from_server_header,
+    extract_model_from_realm,
+    infer_vendor_from_host,
+)
+
+
+def _hints_from_server_headers(host):
+    """Merges hints from Server-headers across all web_probes. First hit wins per key."""
+    merged = {}
+    for probe in (host.get('web_probes') or {}).values():
+        if not isinstance(probe, dict):
+            continue
+        hints = detect_from_server_header(probe.get('server', ''))
+        for key, value in hints.items():
+            merged.setdefault(key, value)
+    return merged
 
 
 WINDOWS_PORTS = {135, 139, 445, 3389, 5985, 5986}
@@ -10,10 +28,14 @@ DOMAIN_SERVICE_PORTS = {88, 389, 445, 636}
 NETWORK_PORTS = {53, 161, 8080, 8443, 8728, 8729, 8291}
 PRINTER_PORTS = {515, 631, 9100}
 CAMERA_PORTS = {554, 8554, 8899, 34567}
-LINUX_MARKERS = ('linux', 'unix', 'debian', 'ubuntu', 'centos', 'rocky', 'almalinux', 'synology', 'qnap')
-NETWORK_MARKERS = ('openwrt', 'router', 'switch', 'ubiquiti', 'cisco', 'kerio', 'tp-link', 'nag')
+LINUX_MARKERS = ('linux', 'unix', 'debian', 'ubuntu', 'centos', 'rocky', 'almalinux', 'synology', 'qnap', 'webmin', 'miniserv')
+NETWORK_MARKERS = (
+    'openwrt', 'router', 'switch', 'ubiquiti', 'cisco', 'kerio', 'tp-link', 'nag',
+    'rompager', 'virata-emweb', 'switchexplorer', 'gs1910', 'allegro-software',
+    'zyxel', 'apc ', 'schneider electric', 'managed ups', 'smart-ups', 'pdu-',
+)
 WINDOWS_MARKERS = ('windows', 'microsoft rpc', 'microsoft-ds', 'winrm', 'wsman', 'rdp')
-CAMERA_MARKERS = ('camera', 'hikvision', 'dahua', 'onvif', 'xmeye', 'rtsp')
+CAMERA_MARKERS = ('camera', 'hikvision', 'dahua', 'onvif', 'xmeye', 'rtsp', 'gsoap', 'mobotix', 'wmi v')
 PRINTER_MARKERS = (
     'printer',
     'jetdirect',
@@ -78,10 +100,10 @@ def classify_host(host):
         category = 'mikrotik'
     elif _contains_any(text, ('nanokvm', 'ip-kvm', 'pikvm')):
         category = 'ipkvm'
-    elif _contains_any(text, CAMERA_MARKERS) or ({554} & ports and any(v in (vendor or '').lower() for v in ('hikvision', 'dahua'))):
-        category = 'camera'
     elif _looks_like_printer(text, ports):
         category = 'printer'
+    elif _contains_any(text, CAMERA_MARKERS) or ({554} & ports and any(v in (vendor or '').lower() for v in ('hikvision', 'dahua'))):
+        category = 'camera'
     elif _contains_any(text, NETWORK_MARKERS) or NETWORK_PORTS & ports == {8728} or NETWORK_PORTS & ports == {8729}:
         category = 'network'
     elif _contains_any(text, WINDOWS_MARKERS) or WINDOWS_STRONG_PORTS & ports:
@@ -93,6 +115,12 @@ def classify_host(host):
         )
     ):
         category = 'linux'
+
+    server_hints = _hints_from_server_headers(host)
+    if category == CATEGORY_UNKNOWN and server_hints.get('category'):
+        category = server_hints['category']
+    if not vendor and server_hints.get('vendor'):
+        vendor = server_hints['vendor']
 
     os_type = ''
     host_type = TYPE_UNKNOWN
@@ -144,6 +172,15 @@ def classify_host(host):
             model_match = _camera_model_from_text(text)
             if model_match:
                 model = model_match.group(1)
+
+    if not model and category in ('network', 'camera'):
+        for probe in (host.get('web_probes') or {}).values():
+            if not isinstance(probe, dict):
+                continue
+            realm_model = extract_model_from_realm(probe.get('www_authenticate', ''))
+            if realm_model:
+                model = realm_model
+                break
 
     return {
         'category': category,

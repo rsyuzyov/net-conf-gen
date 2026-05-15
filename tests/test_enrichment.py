@@ -266,7 +266,7 @@ class EnrichmentTests(unittest.TestCase):
                 'os_type': 'linux',
                 'open_ports': [22],
                 'services': ['SSH'],
-                'scan_status': STATUS_COMPLETED,
+                'scan_status': STATUS_SCANNED,
                 'auth_method': 'ssh',
                 'auth_methods': ['ssh'],
                 'auth_attempts': [
@@ -292,7 +292,7 @@ class EnrichmentTests(unittest.TestCase):
                 },
             )
 
-            enricher.enrich_host('192.168.1.70', force=True)
+            enricher.enrich_host('192.168.1.70')
 
             host = storage.get_host_record('192.168.1.70')
             self.assertEqual('new-root', host.user)
@@ -312,7 +312,7 @@ class EnrichmentTests(unittest.TestCase):
                 'os_type': 'windows',
                 'open_ports': [5985],
                 'services': ['WinRM'],
-                'scan_status': STATUS_COMPLETED,
+                'scan_status': STATUS_SCANNED,
                 'auth_method': 'winrm',
                 'auth_methods': ['winrm'],
                 'auth_attempts': [
@@ -331,7 +331,7 @@ class EnrichmentTests(unittest.TestCase):
                 winrm_response={'auth_failed': True, 'error': 'Access is denied'},
             )
 
-            enricher.enrich_host('192.168.1.80', force=True)
+            enricher.enrich_host('192.168.1.80')
 
             host = storage.get_host_record('192.168.1.80')
             self.assertEqual(STATUS_AUTH_AVAILABLE_NO_ACCESS, host.scan_status)
