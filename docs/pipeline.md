@@ -53,7 +53,7 @@ flowchart TD
     Load --> StorageInit[Storage init:<br/>читает scan_state.json,<br/>backup в backups/]
     StorageInit --> Targets[targets/exclusions из config]
 
-    Targets --> Disc[Stage 1: Discovery<br/>ICMP + TCP scan + banner<br/>= List of HostRecord]
+    Targets --> Disc[Stage 1: Discovery<br/>TCP scan + banner<br/>= List of HostRecord]
     Disc --> Apply{apply_discovery_snapshot}
     Apply -->|IP отсутствует| Add[Добавить узел целиком]
     Apply -->|IP есть, force=True| Replace[Полная замена узла]
@@ -66,13 +66,13 @@ flowchart TD
     Keep --> Web
     Preserve --> Web
 
-    Web[Stage 1.5: Web Probe<br/>HTTP/HTTPS + TLS<br/>vendor/model targeted probes<br/>пишет web_probes]
+    Web[Stage 2: Web Probe<br/>HTTP/HTTPS + TLS<br/>vendor/model targeted probes<br/>пишет web_probes]
     Web --> Scan
-    Scan[Stage 2: Authenticated Scan<br/>SSH → WinRM → PsExec<br/>пропускает завершённые<br/>soft-upgrade на SSH для not-ssh]
+    Scan[Stage 3: Authenticated Scan<br/>SSH → WinRM → PsExec<br/>пропускает завершённые<br/>soft-upgrade на SSH для not-ssh]
     Scan --> Virt
-    Virt[Stage 3: Virtualization<br/>PVE API → VMs/LXC]
+    Virt[Stage 4: Virtualization<br/>PVE API → VMs/LXC]
     Virt --> Report
-    Report[Stage 4: Reporting<br/>HTML/CSV/JSON/Ansible inventory<br/>+ ssh_config + group_vars]
+    Report[Stage 5: Reporting<br/>HTML/CSV/JSON/Ansible inventory<br/>+ ssh_config + group_vars]
     Report --> End([готово])
 
     style Disc fill:#e1f5ff

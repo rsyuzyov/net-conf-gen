@@ -107,7 +107,7 @@ def main():
         storage.flush()
 
     if args.step in ['web', 'all']:
-        logger.info("=== Stage 1.5: Web Probe ===")
+        logger.info("=== Stage 2: Web Probe ===")
         existing_hosts = list(storage.iter_host_records())
         if not existing_hosts:
             logger.warning("No hosts in storage. Run discovery first.")
@@ -122,7 +122,7 @@ def main():
             logger.info("Web probe completed.")
 
     if args.step in ['scan', 'all']:
-        logger.info("=== Stage 2: Authenticated Enrichment ===")
+        logger.info("=== Stage 3: Authenticated Enrichment ===")
         existing_hosts = list(storage.iter_host_records())
         if not existing_hosts:
             logger.warning("No hosts in storage. Run discovery first.")
@@ -138,7 +138,7 @@ def main():
             logger.info("Authenticated enrichment completed.")
 
     if args.step in ['virt', 'all']:
-        logger.info("=== Stage 3: Virtualization Enrichment ===")
+        logger.info("=== Stage 4: Virtualization Enrichment ===")
         existing_hosts = list(storage.iter_host_records())
         if not existing_hosts:
             logger.warning("No hosts in storage. Run discovery first.")
@@ -153,7 +153,7 @@ def main():
             logger.info("Virtualization enrichment completed.")
 
     if args.step in ['report', 'all']:
-        logger.info("=== Stage 4: Reporting ===")
+        logger.info("=== Stage 5: Reporting ===")
         from src.reporting import ReportGenerator
         reporter = ReportGenerator(storage, output_dir=output_dir, domain=domain, targets=targets)
         reporter.generate_all()
