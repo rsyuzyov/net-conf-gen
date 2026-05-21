@@ -16,26 +16,33 @@ class CredentialManager:
                     user = account.get('user')
                     password = account.get('password')
                     key_path = account.get('key_path')
-                    
+                    use_ssh_config = proto == 'ssh' and user == 'ssh_config'
+
                     # Find existing entry for this user and protocol
-                    existing = next((c for c in normalized 
+                    existing = next((c for c in normalized
                                    if c['user'] == user and c['type'] == proto), None)
-                    
-                    
+
+
                     if not existing:
                         existing = {
                             'type': proto,
                             'user': user,
                             'passwords': [],
-                            'key_paths': []
+                            'key_paths': [],
+                            'use_ssh_config': use_ssh_config,
                         }
                         normalized.append(existing)
-                    
+
+                    if use_ssh_config:
+                        existing['use_ssh_config'] = True
+
                     if password:
                         existing['passwords'].append(str(password))
                     if key_path:
                         existing['key_paths'].append(key_path)
 
+        # ssh_config-credentials всегда пробуем первой попыткой
+        normalized.sort(key=lambda c: 0 if c.get('use_ssh_config') else 1)
         return normalized
 
     def __iter__(self):

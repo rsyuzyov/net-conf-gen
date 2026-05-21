@@ -1,4 +1,5 @@
 import logging
+import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.classification import classify_host
@@ -202,9 +203,13 @@ class AuthenticatedEnricher:
         determine_vendor_model(result, merged | final_model)
         return result
 
-    def _try_single_connect(self, connector, ip, method, host, update_data, user=None, password=None, key_path=None):
+    def _try_single_connect(self, connector, ip, method, host, update_data, user=None, password=None, key_path=None, use_ssh_config=False):
         try:
-            info = connector.connect(ip, user, password=password, key_path=key_path)
+            if use_ssh_config:
+                hostname_hint = self._field(host, 'hostname', '') or None
+                info = connector.connect(ip, user, use_ssh_config=True, hostname=hostname_hint)
+            else:
+                info = connector.connect(ip, user, password=password, key_path=key_path)
         except Exception as e:
             self._record_attempt(update_data, method, user, 'error', str(e))
             return False
@@ -253,6 +258,10 @@ class AuthenticatedEnricher:
 
             user = cred.get('user')
             if protocol == 'ssh':
+                if cred.get('use_ssh_config'):
+                    if self._try_single_connect(connector, ip, 'ssh', host, update_data, use_ssh_config=True):
+                        return True
+                    continue
                 for key_path in cred.get('key_paths', []):
                     if self._try_single_connect(connector, ip, 'ssh_key', host, update_data, user=user, key_path=key_path):
                         return True
@@ -402,6 +411,96 @@ class AuthenticatedEnricher:
 
         self._finalize_without_auth(host, update_data)
         self.storage.update_host(ip, update_data)
+
+    def _tcp_probe(self, ip, port, timeout=2.0):
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                return True
+        except (OSError, socket.timeout):
+            return False
+
+    def _recheck_protocol_ports(self, ip, protocol):
+        """Возвращает множество портов протокола, реально открытых сейчас."""
+        ports = self._required_ports(protocol)
+        return {p for p in ports if self._tcp_probe(ip, p)}
+
+    def recheck_host(self, ip, protocol):
+        """Перепроверка одного протокола для одного хоста.
+
+        Условия:
+          - хост существует в storage;
+          - текущий auth_method != protocol (иначе работаем — нет смысла);
+          - хотя бы один порт протокола сейчас отвечает.
+
+        На успех — `update_host` через `_finalize_success`. На неудачу — добавляем
+        запись в `auth_attempts`, но scan_status не меняем (recheck не должен
+        ломать ранее завершённое состояние).
+        """
+        host = self.storage.get_host_record(ip)
+        if not host:
+            return False
+
+        if self._field(host, 'auth_method', '') == protocol:
+            return False
+
+        live_ports = self._recheck_protocol_ports(ip, protocol)
+        if not live_ports:
+            return False
+
+        # Подмешиваем актуальные открытые порты, чтобы _should_try_protocol не отсёк
+        host_dict = host.to_dict() if isinstance(host, HostRecord) else dict(host)
+        existing_ports = set(host_dict.get('open_ports', []) or [])
+        host_dict['open_ports'] = sorted(existing_ports | live_ports)
+
+        update_data = {
+            'auth_methods': list(host_dict.get('auth_methods', [])),
+            'auth_attempts': list(host_dict.get('auth_attempts', [])),
+        }
+
+        if not self._try_protocol(ip, host_dict, protocol, update_data):
+            # неудачу всё равно зафиксируем: новые auth_attempts/auth_methods полезны для отладки
+            self.storage.update_host(ip, {
+                'auth_methods': update_data['auth_methods'],
+                'auth_attempts': update_data['auth_attempts'],
+            })
+            return False
+
+        # Успех: обновим open_ports тоже (порт мог быть закрыт ранее)
+        update_data.setdefault('open_ports', host_dict['open_ports'])
+        self.storage.update_host(ip, update_data)
+        logger.info("Recheck %s on %s: SUCCESS (auth_method=%s)", protocol, ip, update_data.get('auth_method', protocol))
+        return True
+
+    def recheck_all(self, ips, protocols):
+        """Перепроверка списка хостов по списку протоколов. По протоколам идёт
+        последовательно для одного хоста; между хостами — параллельно."""
+        if not ips or not protocols:
+            return {'attempted': 0, 'succeeded': 0}
+
+        stats = {'attempted': 0, 'succeeded': 0}
+
+        def _worker(ip):
+            local_succ = 0
+            for proto in protocols:
+                # после успешного захода по более раннему протоколу следующие имеют смысл,
+                # но обычно достаточно одного; продолжаем — пусть данные дополнятся
+                if self.recheck_host(ip, proto):
+                    local_succ += 1
+            return local_succ
+
+        with ThreadPoolExecutor(max_workers=min(self.concurrency, len(ips))) as executor:
+            futures = {executor.submit(_worker, ip): ip for ip in ips}
+            for future in as_completed(futures):
+                ip = futures[future]
+                stats['attempted'] += 1
+                try:
+                    succ = future.result()
+                    stats['succeeded'] += 1 if succ else 0
+                except Exception as e:
+                    logger.error("Recheck failed for %s: %s", ip, e)
+
+        self.storage.flush()
+        return stats
 
     def enrich_all(self, ips):
         if not ips:

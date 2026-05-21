@@ -31,3 +31,4 @@
 - [topics/config.md](topics/config.md) — порядок ключей конфига, грабли установки pyyaml
 - [topics/enrichment-and-inventory.md](topics/enrichment-and-inventory.md) — порядок протоколов, soft-upgrade на SSH, группы инвентаря, валидация ответов SSH
 - [feedback_style.md](feedback_style.md) — избегать англицизмов в ответах
+- [topics/state-diff.md](topics/state-diff.md) — HTML diff между scan_state и история изменений хоста

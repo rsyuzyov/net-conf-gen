@@ -8,6 +8,7 @@ credentials:
         password: "your_password_here"
   - protocol: ssh
     accounts:
+      - user: ssh_config         # подключение через ~/.ssh/config (User/IdentityFile/ProxyCommand)
       - user: root
         password: "your_password_here"
       - user: admin

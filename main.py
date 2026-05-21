@@ -55,9 +55,11 @@ def run_discovery(config, targets, exclusions):
 def main():
     parser = argparse.ArgumentParser(description="net-conf-gen - network inventory")
     parser.add_argument('--config', default='config.yaml', help='Path to config file')
-    parser.add_argument('--step', choices=['discovery', 'web', 'scan', 'virt', 'report', 'all'], default='all', help='Step to run')
+    parser.add_argument('--step', choices=['discovery', 'web', 'scan', 'virt', 'recheck', 'report', 'all'], default='all', help='Step to run')
     parser.add_argument('--force', action='store_true', help='Force discovery to replace nodes for all found hosts (not just incomplete ones)')
     parser.add_argument('--host', help='Scan specific host IP')
+    parser.add_argument('--protocols', default='ssh,winrm,psexec',
+                        help='Протоколы для --step recheck: список через запятую (ssh,winrm,psexec) или all')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
 
@@ -151,6 +153,39 @@ def main():
             enricher.enrich_all(target_ips=virt_ips)
             storage.flush()
             logger.info("Virtualization enrichment completed.")
+
+    if args.step == 'recheck':
+        logger.info("=== Stage: Recheck protocols ===")
+        existing_hosts = list(storage.iter_host_records())
+        if not existing_hosts:
+            logger.warning("No hosts in storage. Run discovery first.")
+        else:
+            raw_protocols = (args.protocols or '').strip().lower()
+            if raw_protocols in ('all', ''):
+                protocols = ['ssh', 'winrm', 'psexec']
+            else:
+                protocols = [p.strip() for p in raw_protocols.split(',') if p.strip()]
+            valid = {'ssh', 'winrm', 'psexec'}
+            protocols = [p for p in protocols if p in valid]
+            if not protocols:
+                logger.error("No valid protocols specified for recheck. Use --protocols ssh,winrm,psexec")
+                sys.exit(1)
+            logger.info("Rechecking protocols: %s", ','.join(protocols))
+
+            recheck_ips = [args.host] if args.host else [host.ip for host in existing_hosts]
+            enricher = AuthenticatedEnricher(
+                storage=storage,
+                credentials=config.get('credentials', []),
+                concurrency=(config.get('enrichment') or {}).get('concurrency', config.get('concurrency', 10)),
+            )
+            stats = enricher.recheck_all(recheck_ips, protocols)
+            logger.info("Recheck completed: attempted=%s, succeeded=%s", stats['attempted'], stats['succeeded'])
+
+            # автоматически перегенерируем отчёты
+            logger.info("=== Regenerating reports ===")
+            from src.reporting import ReportGenerator
+            reporter = ReportGenerator(storage, output_dir=output_dir, domain=domain, targets=targets)
+            reporter.generate_all()
 
     if args.step in ['report', 'all']:
         logger.info("=== Stage 5: Reporting ===")

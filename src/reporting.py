@@ -441,15 +441,30 @@ class ReportGenerator:
     def generate_all(self):
         hosts = self._sort_hosts_by_ip(list(self.storage.iter_host_records()))
         sorted_data = self._sort_data_by_ip({host.ip: host.to_dict() for host in hosts})
-        
+
         self._generate_hosts_txt(hosts)
         self._generate_csv(hosts)
         self._generate_json(sorted_data)
         self._generate_ansible_inventory(hosts)
         self._generate_ssh_config(hosts)
         self._generate_html(hosts)
-        
+        self._generate_state_diff()
+
         logger.info(f"Reports generated in {self.output_dir}")
+
+    def _generate_state_diff(self):
+        from src.state_diff import find_latest_backup, generate_diff_html
+
+        state_file = os.path.join(self.output_dir, 'scan_state.json')
+        prev = find_latest_backup(self.output_dir)
+        if not prev or not os.path.exists(state_file):
+            return
+        out_path = os.path.join(self.output_dir, 'scan_diff.html')
+        try:
+            generate_diff_html(prev, state_file, out_path)
+            logger.info(f"State diff generated: {out_path}")
+        except Exception as e:
+            logger.warning(f"Failed to generate state diff: {e}")
 
     def _generate_hosts_txt(self, hosts):
         with open(os.path.join(self.output_dir, 'hosts.txt'), 'w', encoding='utf-8') as f:

@@ -1,3 +1,5 @@
+import getpass
+import os
 import re
 import paramiko
 import logging
@@ -10,6 +12,67 @@ logging.getLogger('paramiko.transport').setLevel(logging.CRITICAL)
 
 
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9.\-]*[A-Za-z0-9])?$')
+
+_SSH_CONFIG_CACHE = {'mtime': None, 'config': None}
+
+
+def _load_ssh_config():
+    """Кэшированная загрузка ~/.ssh/config. Возвращает None если файла нет/битый."""
+    path = os.path.expanduser('~/.ssh/config')
+    if not os.path.exists(path):
+        return None
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    if _SSH_CONFIG_CACHE['mtime'] == mtime and _SSH_CONFIG_CACHE['config']:
+        return _SSH_CONFIG_CACHE['config']
+    try:
+        cfg = paramiko.SSHConfig()
+        with open(path, 'r', encoding='utf-8') as f:
+            cfg.parse(f)
+    except Exception as e:
+        logger.debug(f"Failed to parse ~/.ssh/config: {e}")
+        return None
+    _SSH_CONFIG_CACHE['mtime'] = mtime
+    _SSH_CONFIG_CACHE['config'] = cfg
+    return cfg
+
+
+def _resolve_ssh_config_target(ip, hostname=None):
+    """Ищет настройки в ~/.ssh/config для ip → hostname.
+
+    Возвращает dict с ключами {host, port, user, key_filenames, sock} или None,
+    если ни один target не даёт значимого match (есть только глобальные defaults).
+    """
+    cfg = _load_ssh_config()
+    if cfg is None:
+        return None
+    for candidate in (ip, hostname):
+        if not candidate:
+            continue
+        try:
+            opts = cfg.lookup(candidate)
+        except Exception:
+            continue
+        # Match считается значимым, если есть user/identityfile/proxy — иначе это просто defaults
+        has_signal = any(k in opts for k in ('user', 'identityfile', 'proxycommand', 'proxyjump'))
+        if not has_signal:
+            continue
+        resolved = {
+            'host': opts.get('hostname', candidate),
+            'port': int(opts.get('port', 22)),
+            'user': opts.get('user') or getpass.getuser(),
+            'key_filenames': opts.get('identityfile') or None,
+        }
+        proxy_cmd = opts.get('proxycommand')
+        if proxy_cmd:
+            try:
+                resolved['sock'] = paramiko.ProxyCommand(proxy_cmd)
+            except Exception as e:
+                logger.debug(f"Failed to init ProxyCommand for {candidate}: {e}")
+        return resolved
+    return None
 
 
 def _sanitize_hostname(raw):
@@ -41,12 +104,29 @@ def _sanitize_single_line(raw, max_len=200):
 
 
 class SSHConnector(BaseConnector):
-    def connect(self, ip, user, password=None, key_path=None):
+    def connect(self, ip, user, password=None, key_path=None, use_ssh_config=False, hostname=None):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            # Connect with password or key
-            if key_path:
+            if use_ssh_config:
+                resolved = _resolve_ssh_config_target(ip, hostname)
+                if not resolved:
+                    return None
+                connect_kwargs = {
+                    'hostname': resolved['host'],
+                    'port': resolved['port'],
+                    'username': resolved['user'],
+                    'timeout': 5,
+                    'allow_agent': True,
+                    'look_for_keys': True,
+                }
+                if resolved.get('key_filenames'):
+                    connect_kwargs['key_filename'] = resolved['key_filenames']
+                if resolved.get('sock') is not None:
+                    connect_kwargs['sock'] = resolved['sock']
+                client.connect(**connect_kwargs)
+                user = resolved['user']
+            elif key_path:
                 client.connect(ip, username=user, key_filename=key_path, timeout=5)
             elif password:
                 client.connect(ip, username=user, password=password, timeout=5)
