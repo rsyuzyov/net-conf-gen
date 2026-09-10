@@ -14,9 +14,9 @@ from src.utils import reverse_dns_name
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 1.5
-DEFAULT_CONCURRENCY = 64
-DEFAULT_RETRIES = 0
+DEFAULT_TIMEOUT = float(os.environ.get("NCG_TIMEOUT", "1.5"))
+DEFAULT_CONCURRENCY = int(os.environ.get("NCG_CONCURRENCY", "64"))
+DEFAULT_RETRIES = int(os.environ.get("NCG_RETRIES", "0"))
 PTR_PORT_HINTS = {88, 135, 389, 445, 3389, 5985, 5986}
 PTR_SERVICE_HINTS = {'KERBEROS', 'RPC', 'LDAP', 'LDAPS', 'SMB', 'RDP', 'WINRM'}
 

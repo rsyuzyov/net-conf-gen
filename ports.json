@@ -38,6 +38,7 @@
   "5900": "VNC",
   "5901": "VNC",
   "5985": "WinRM",
+  "7000": "Domination",
   "8006": "Proxmox",
   "8080": "HTTP-Alt",
   "8200": "vSphere",
