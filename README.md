@@ -62,8 +62,41 @@ Windows:
 - `ports_file`: JSON с перечнем целевых портов и их display-именами
 - `credentials`: учётные данные для этапа authenticated enrichment
 - `concurrency`: параллелизм authenticated enrichment
+- `secrets.kdbx`: где брать сейф KeePassXC для ссылок `kdbx:` (см. ниже)
 
 При первом запуске без `config.yaml` запускается интерактивный wizard.
+
+### Пароли: ссылки на сейф и переменные окружения
+
+Поле `password` в `credentials` принимает не только сам пароль, но и ссылку на него — чтобы
+в конфиге не лежали пароли открытым текстом:
+
+| Значение | Откуда берётся пароль |
+|---|---|
+| `env:NCG_AGENT_PW` | переменная окружения `NCG_AGENT_PW` |
+| `kdbx:общие/agent-internal-domains` | поле `Password` записи KeePassXC (путь группа/запись или просто имя записи) |
+| `kdbx:root@srv-app1#UserName` | другой атрибут записи — после `#` |
+| `plain:env:abc` | буквальная строка `env:abc` (если пароль сам начинается с `env:`/`kdbx:`) |
+| любая другая строка | используется как есть (старые конфиги продолжают работать) |
+
+`kdbx:` читается через `keepassxc-cli show -q -s -a <атрибут> <сейф> <запись>`, мастер-пароль
+подаётся в stdin, завершающий CR/LF срезается. Параметры сейфа — в конфиге или в окружении
+(окружение важнее):
+
+```yaml
+secrets:
+  kdbx:
+    database: '%USERPROFILE%\.secrets\agent.kdbx'          # или NCG_KDBX_DATABASE
+    master_dpapi: '%USERPROFILE%\.secrets\agent-master.dpapi' # или NCG_KDBX_MASTER_DPAPI (только Windows)
+    # cli: 'C:\Program Files\KeePassXC\keepassxc-cli.exe'  # или NCG_KEEPASSXC_CLI; по умолчанию из PATH
+```
+
+- `master_dpapi` — файл, созданный `Read-Host -AsSecureString | ConvertFrom-SecureString`
+  тем же пользователем на той же машине (DPAPI); вместо него можно задать мастер в `NCG_KDBX_MASTER`.
+- Все ссылки разрешаются при старте этапов `scan`/`virt`/`recheck`/`all`; если хоть одна не
+  разрешилась — запуск останавливается с ошибкой (значения секретов в лог не пишутся).
+- Хост без сейфа (например, сканер внутри площадки): ссылки `env:` и переменная, заданная
+  перед запуском, — `$env:NCG_AGENT_PW = ...` (PowerShell) / `export NCG_AGENT_PW=...`.
 
 ## Использование
 
@@ -97,7 +130,7 @@ python main.py --host 10.0.0.1 --force --debug
 Быстрая проверка после установки:
 
 ```bash
-python -m pytest tests/test_models_storage.py tests/test_enrichment.py tests/test_reporting.py
+python -m pytest tests/test_models_storage.py tests/test_enrichment.py tests/test_reporting.py tests/test_secret_refs.py
 python main.py --config config.yaml --step discovery --host 10.0.0.1 --debug
 python main.py --config config.yaml --step report
 ```

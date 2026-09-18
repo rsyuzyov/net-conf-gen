@@ -9,6 +9,8 @@ from datetime import datetime
 import yaml
 
 from src.config_wizard import create_config
+from src.credentials import CredentialManager
+from src import secret_refs
 from src.discovery import NativeDiscovery
 from src.enrichment import AuthenticatedEnricher
 from src.virtualization_enrichment import VirtualizationEnricher
@@ -94,6 +96,15 @@ def main():
     if not targets:
         logger.error("No targets specified in config.")
         sys.exit(1)
+
+    secret_refs.configure(config)
+    if args.step in ['scan', 'virt', 'recheck', 'all']:
+        # ссылки env:/kdbx: проверяем до долгих этапов, чтобы не упасть посреди прогона
+        try:
+            CredentialManager(config.get('credentials', []))
+        except secret_refs.SecretResolutionError as exc:
+            logger.error("Secret reference error: %s", exc)
+            sys.exit(1)
 
     logger.info("Domain: %s", domain)
     logger.info("Output directory: %s", output_dir)

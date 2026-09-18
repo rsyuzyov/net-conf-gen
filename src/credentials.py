@@ -1,5 +1,9 @@
+from src.secret_refs import get_default_resolver
+
+
 class CredentialManager:
-    def __init__(self, raw_credentials):
+    def __init__(self, raw_credentials, resolver=None):
+        self._resolver = resolver or get_default_resolver()
         self._credentials = self._normalize(raw_credentials)
 
     def _normalize(self, credentials):
@@ -37,7 +41,8 @@ class CredentialManager:
                         existing['use_ssh_config'] = True
 
                     if password:
-                        existing['passwords'].append(str(password))
+                        # env:/kdbx:-ссылка разрешается здесь; обычная строка — как есть
+                        existing['passwords'].append(self._resolver.resolve(password))
                     if key_path:
                         existing['key_paths'].append(key_path)
 
