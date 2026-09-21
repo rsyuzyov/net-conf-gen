@@ -2,6 +2,10 @@ domain: example.local
 targets:
   - 10.0.0.0/24
 credentials:
+  # Пароль можно задать тремя способами (подробности — в README, раздел «Пароли по ссылке»):
+  #   "строка"                     — открытым текстом в конфиге, как раньше
+  #   env:NCG_AGENT_PW             — из переменной окружения (сейф не нужен)
+  #   kdbx:группа/запись[#атрибут] — из сейфа KeePassXC (нужен keepassxc-cli и secrets.kdbx ниже)
   - protocol: winrm
     accounts:
       - user: domain\username
@@ -22,3 +26,9 @@ discovery:
   retries: 0            # повторов при неудаче (0 = быстрый скан, 1-2 для нестабильной сети)
 ports_file: ports.json
 exclusions: []
+# Сейф для ссылок kdbx: — нужен, только если они используются выше.
+# secrets:
+#   kdbx:
+#     database: '%USERPROFILE%\.secrets\agent.kdbx'             # или переменная NCG_KDBX_DATABASE
+#     master_dpapi: '%USERPROFILE%\.secrets\agent-master.dpapi' # или NCG_KDBX_MASTER / NCG_KDBX_MASTER_DPAPI
+#     # cli: 'C:\Program Files\KeePassXC\keepassxc-cli.exe'     # по умолчанию keepassxc-cli из PATH
