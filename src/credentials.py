@@ -1,6 +1,23 @@
 from src.secret_refs import get_default_resolver
 
 
+def normalize_categories(value):
+    """Список категорий хостов, на которых учётку разрешено пробовать.
+
+    None/пусто — ограничения нет (учётка пробуется везде, как раньше).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [part.strip() for part in value.replace(',', ' ').split()]
+    else:
+        items = [str(part).strip() for part in value]
+    items = [item.lower() for item in items if item]
+    if not items:
+        return None
+    return tuple(sorted(set(items)))
+
+
 class CredentialManager:
     def __init__(self, raw_credentials, resolver=None):
         self._resolver = resolver or get_default_resolver()
@@ -20,11 +37,13 @@ class CredentialManager:
                     user = account.get('user')
                     password = account.get('password')
                     key_path = account.get('key_path')
+                    categories = normalize_categories(account.get('categories'))
                     use_ssh_config = proto == 'ssh' and user == 'ssh_config'
 
-                    # Find existing entry for this user and protocol
+                    # Find existing entry for this user, protocol and category filter
                     existing = next((c for c in normalized
-                                   if c['user'] == user and c['type'] == proto), None)
+                                   if c['user'] == user and c['type'] == proto
+                                   and c.get('categories') == categories), None)
 
 
                     if not existing:
@@ -33,6 +52,7 @@ class CredentialManager:
                             'user': user,
                             'passwords': [],
                             'key_paths': [],
+                            'categories': categories,
                             'use_ssh_config': use_ssh_config,
                         }
                         normalized.append(existing)

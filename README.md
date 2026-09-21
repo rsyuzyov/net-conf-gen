@@ -66,6 +66,29 @@ Windows:
 
 При первом запуске без `config.yaml` запускается интерактивный wizard.
 
+### Где пробовать учётку: `categories`
+
+У аккаунта в `credentials` есть необязательное поле `categories` — список категорий хостов
+(`linux`, `windows`, `network`, `mikrotik`, `ipkvm`, `printer`, `camera`, `unknown`), на которых
+эту учётку разрешено пробовать. Без поля учётка пробуется везде, как раньше.
+
+```yaml
+  - protocol: ssh
+    accounts:
+      - user: root
+        password: kdbx:infra/root@nanokvm
+        categories: [linux, network, mikrotik, ipkvm, unknown]
+      - user: domgent
+        password: kdbx:общие/agent-internal-domains
+```
+
+Зачем: на Windows-хосте с открытым 22 каждый неподошедший пароль root — это событие **4625**
+в журнале Security (а на парке с 28 такими хостами и 5 паролями root — 140 событий за прогон,
+и все с одного адреса, что ловит RDP Defender / fail2ban). Доступ на Windows всё равно идёт
+через winrm/psexec, поэтому root-пароли достаточно ограничить не-Windows категориями.
+Ограничение действует только на authenticated enrichment; сбор данных с гипервизоров
+(`--step virt`) учётки берёт полностью.
+
 ### Пароли: ссылки на сейф и переменные окружения
 
 Поле `password` в `credentials` принимает не только сам пароль, но и ссылку на него — чтобы

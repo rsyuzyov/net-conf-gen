@@ -238,6 +238,18 @@ class AuthenticatedEnricher:
 
         return False
 
+    def _cred_allowed_for_host(self, cred, host):
+        """Учётка с `categories` пробуется только на хостах этих категорий.
+
+        Нужно, чтобы root-пароли SSH не перебирались на Windows-хостах с открытым 22:
+        каждая неудачная попытка — событие 4625 в Security, а доступ туда всё равно
+        идёт через winrm/psexec. Без `categories` поведение прежнее — пробуем везде.
+        """
+        categories = cred.get('categories')
+        if not categories:
+            return True
+        return self._field(host, 'category', CATEGORY_UNKNOWN) in categories
+
     def _try_protocol(self, ip, host, protocol, update_data):
         if not self._should_try_protocol(host, protocol):
             return False
@@ -254,6 +266,8 @@ class AuthenticatedEnricher:
 
         for cred in self.credential_manager:
             if cred.get('type') != cred_type:
+                continue
+            if not self._cred_allowed_for_host(cred, host):
                 continue
 
             user = cred.get('user')

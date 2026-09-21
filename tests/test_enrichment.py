@@ -78,6 +78,80 @@ class EnrichmentTests(unittest.TestCase):
             self.assertEqual('root', host.user)
             self.assertEqual('Ubuntu 24.04', host.os)
 
+    def test_categories_filter_skips_ssh_password_bruteforce_on_windows(self):
+        """root-пароли с categories: [linux] не пробуются на Windows-хосте с открытым 22."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.20', {
+                'ip': '192.168.1.20',
+                'hostname': 'srv-rds1',
+                'category': 'windows',
+                'type': 'server',
+                'os_type': 'windows',
+                'open_ports': [22, 3389, 5985],
+                'services': ['SSH', 'RDP', 'WinRM'],
+                'scan_status': STATUS_DISCOVERED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'ssh',
+                    'accounts': [
+                        {'user': 'root', 'password': 'p1', 'categories': ['linux', 'network']},
+                        {'user': 'root', 'password': 'p2', 'categories': ['linux', 'network']},
+                        {'user': 'dom\\agent', 'password': 'p3'},
+                    ],
+                }],
+                ssh_response={'success': False, 'error': 'auth failed'},
+                winrm_response={'success': False, 'error': 'auth failed'},
+                psexec_response={'success': False, 'error': 'auth failed'},
+            )
+
+            enricher.enrich_host('192.168.1.20')
+
+            ssh_users = [call['user'] for call in enricher._ssh.calls]
+            self.assertNotIn('root', ssh_users)
+            self.assertIn('dom\\agent', ssh_users)
+
+    def test_categories_filter_keeps_credential_on_matching_category(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.21', {
+                'ip': '192.168.1.21',
+                'hostname': 'srv-app2',
+                'category': 'linux',
+                'type': 'server',
+                'os_type': 'linux',
+                'open_ports': [22],
+                'services': ['SSH'],
+                'scan_status': STATUS_DISCOVERED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'ssh',
+                    'accounts': [{'user': 'root', 'password': 'p1', 'categories': 'linux, network'}],
+                }],
+                ssh_response={
+                    'success': True,
+                    'hostname': 'srv-app2',
+                    'os': 'Debian 12',
+                    'os_type': 'linux',
+                    'auth_method': 'ssh',
+                    'user': 'root',
+                },
+            )
+
+            enricher.enrich_host('192.168.1.21')
+
+            host = storage.get_host_record('192.168.1.21')
+            self.assertEqual(STATUS_COMPLETED, host.scan_status)
+            self.assertEqual(['root'], [call['user'] for call in enricher._ssh.calls])
+
     def test_auth_fail_sets_auth_available_no_access(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             storage = Storage(output_dir=tmpdir)
