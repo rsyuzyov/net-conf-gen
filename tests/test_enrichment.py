@@ -78,6 +78,47 @@ class EnrichmentTests(unittest.TestCase):
             self.assertEqual('root', host.user)
             self.assertEqual('Ubuntu 24.04', host.os)
 
+    def test_ssh_key_credential_is_tried_before_passwords(self):
+        """Ключ пробуется раньше паролей, даже когда categories развели их по разным записям."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = Storage(output_dir=tmpdir)
+            storage.update_host('192.168.1.22', {
+                'ip': '192.168.1.22',
+                'hostname': 'srv-app3',
+                'category': 'linux',
+                'type': 'server',
+                'os_type': 'linux',
+                'open_ports': [22],
+                'services': ['SSH'],
+                'scan_status': STATUS_DISCOVERED,
+            })
+            storage.flush()
+
+            enricher = StubEnricher(
+                storage=storage,
+                credentials=[{
+                    'protocol': 'ssh',
+                    'accounts': [
+                        {'user': 'root', 'password': 'p1', 'categories': ['linux']},
+                        {'user': 'root', 'key_path': '/key/agent'},
+                    ],
+                }],
+                ssh_response={
+                    'success': True,
+                    'hostname': 'srv-app3',
+                    'os': 'Debian 13',
+                    'os_type': 'linux',
+                    'auth_method': 'ssh',
+                    'user': 'root',
+                },
+            )
+
+            enricher.enrich_host('192.168.1.22')
+
+            first = enricher._ssh.calls[0]
+            self.assertEqual('/key/agent', first['key_path'])
+            self.assertIsNone(first['password'])
+
     def test_categories_filter_skips_ssh_password_bruteforce_on_windows(self):
         """root-пароли с categories: [linux] не пробуются на Windows-хосте с открытым 22."""
         with tempfile.TemporaryDirectory() as tmpdir:

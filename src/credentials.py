@@ -66,8 +66,15 @@ class CredentialManager:
                     if key_path:
                         existing['key_paths'].append(key_path)
 
-        # ssh_config-credentials всегда пробуем первой попыткой
-        normalized.sort(key=lambda c: 0 if c.get('use_ssh_config') else 1)
+        # ssh_config — первой попыткой, затем учётки с ключами и только потом парольные:
+        # ключ не оставляет неудачных входов в журналах, а `categories` разносит одного и того же
+        # пользователя по разным записям (пароль и ключ), и без сортировки пароль шёл бы раньше ключа.
+        def _order(cred):
+            if cred.get('use_ssh_config'):
+                return 0
+            return 1 if cred.get('key_paths') else 2
+
+        normalized.sort(key=_order)
         return normalized
 
     def __iter__(self):
